@@ -210,6 +210,8 @@ const tr = {
     INVALID_KEY: "API anahtarı reddedildi. Anahtarı API sayfasından kontrol edin.",
     MODEL_NOT_FOUND: "Bu model anahtarınız için kullanılamıyor. API sayfasından başka bir model seçin.",
     REFUSAL: "Model bu isteği yanıtlamayı reddetti. İsteği farklı ifade etmeyi deneyin.",
+    UNAVAILABLE:
+      "Yapay zekâ servisi şu an çok yoğun veya geçici olarak yanıt vermiyor; birkaç kez otomatik olarak yeniden denendi. Biraz sonra tekrar deneyin ya da API sayfasından başka bir model seçin (örn. gemini-2.5-flash-lite).",
     RATE_LIMIT: "Kullanım sınırına ulaşıldı (ücretsiz katmanda dakikalık veya günlük sınır). Biraz bekleyip tekrar deneyin ya da başka bir model seçin.",
     TRUNCATED: "Cevap uzunluk sınırına takıldı. Daha kısa bir iş akışı isteyin.",
     UPSTREAM: "Yapay zekâ isteği başarısız oldu:",
@@ -426,6 +428,8 @@ const en: Dict = {
     INVALID_KEY: "The API key was rejected. Check it on the API page.",
     MODEL_NOT_FOUND: "This model is not available for your key. Pick another model on the API page.",
     REFUSAL: "The model declined to answer this request. Try rephrasing it.",
+    UNAVAILABLE:
+      "The AI service is overloaded or temporarily unavailable; it was retried automatically a few times. Try again shortly, or pick another model on the API page (e.g. gemini-2.5-flash-lite).",
     RATE_LIMIT: "Usage limit reached (per-minute or daily limit on free tiers). Wait a bit and try again, or pick another model.",
     TRUNCATED: "The response hit the length limit. Ask for a shorter workflow.",
     UPSTREAM: "AI request failed:",
