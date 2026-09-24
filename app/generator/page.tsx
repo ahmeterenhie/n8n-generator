@@ -3,8 +3,11 @@
 import Link from "next/link";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Shell } from "@/components/Shell";
+import { QuestionsPanel } from "@/components/QuestionsPanel";
+import { SetupGuide } from "@/components/SetupGuide";
 import { WorkflowDiagram } from "@/components/WorkflowDiagram";
 import { activeConnection, loadApiConfig, needsKey, type Connection, type Provider } from "@/lib/apiConfig";
+import type { ClarifyAnswer, ClarifyQuestion } from "@/lib/clarify";
 import { translateError, useI18n } from "@/lib/i18n";
 
 export default function Generator() {
@@ -13,7 +16,13 @@ export default function Generator() {
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState<string | null>(null);
   const [isDemo, setIsDemo] = useState(false);
-  const [loading, setLoading] = useState(false);
+  // Which request is running: fetching questions or generating the workflow
+  const [busy, setBusy] = useState<"asking" | "generating" | null>(null);
+  const loading = busy !== null;
+  const [questions, setQuestions] = useState<ClarifyQuestion[] | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Request + answers the current result was built from (for the setup prompt)
+  const [generatedFrom, setGeneratedFrom] = useState<{ request: string; answers: ClarifyAnswer[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // Provider, key and model saved on the API page
@@ -24,15 +33,9 @@ export default function Generator() {
   // localStorage is only available after mount
   useEffect(() => setConn(activeConnection(loadApiConfig())), []);
 
-  const handleGenerate = useCallback(async () => {
-    if (!prompt.trim() || loading) return;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    setCopied(false);
-
-    try {
-      const res = await fetch("/api/generate", {
+  const postJson = useCallback(
+    async (url: string, extra: Record<string, unknown>) => {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -41,24 +44,56 @@ export default function Generator() {
           apiKey: conn?.apiKey,
           model: conn?.model,
           lang,
+          ...extra,
         }),
       });
-
       // Non-JSON responses (e.g. an HTML error page) would otherwise surface as a cryptic parse error
       const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(translateError(t, data, res.status));
+      return data;
+    },
+    [prompt, conn, lang, t]
+  );
 
-      if (!res.ok) {
-        throw new Error(translateError(t, data, res.status));
-      }
-
-      setResult(JSON.stringify(data.workflow, null, 2));
-      setIsDemo(data.demo === true);
+  // Step 1: ask a few clarifying questions about the description
+  const handleAsk = useCallback(async () => {
+    if (!prompt.trim() || loading) return;
+    setBusy("asking");
+    setError(null);
+    setQuestions(null);
+    try {
+      const data = await postJson("/api/clarify", {});
+      setAnswers({});
+      setQuestions(data.questions);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t.errors.SERVER);
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
-  }, [prompt, loading, conn, lang, t]);
+  }, [prompt, loading, postJson, t]);
+
+  // Step 2: generate, with whatever answers were given (none when skipped)
+  const handleGenerate = useCallback(async () => {
+    if (!prompt.trim() || loading) return;
+    const given: ClarifyAnswer[] = (questions ?? [])
+      .map((q) => ({ question: q.question, answer: answers[q.id]?.trim() ?? "" }))
+      .filter((a) => a.answer);
+    setBusy("generating");
+    setError(null);
+    setResult(null);
+    setCopied(false);
+    try {
+      const data = await postJson("/api/generate", { answers: given });
+      setResult(JSON.stringify(data.workflow, null, 2));
+      setIsDemo(data.demo === true);
+      setGeneratedFrom({ request: prompt.trim(), answers: given });
+      setQuestions(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : t.errors.SERVER);
+    } finally {
+      setBusy(null);
+    }
+  }, [prompt, loading, questions, answers, postJson, t]);
 
   const handleCopy = useCallback(async () => {
     if (!result) return;
@@ -90,14 +125,20 @@ export default function Generator() {
     };
   }, [result, workflow]);
 
+  // Questions belong to the description they were asked about
+  const updatePrompt = (value: string) => {
+    setPrompt(value);
+    setQuestions(null);
+  };
+
   const handleExampleClick = (example: string) => {
-    setPrompt(example);
+    updatePrompt(example);
     textareaRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      handleGenerate();
+      handleAsk();
     }
   };
 
@@ -154,7 +195,7 @@ export default function Generator() {
             <textarea
               ref={textareaRef}
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => updatePrompt(e.target.value)}
               onKeyDown={handleKeyDown}
               maxLength={1000}
               rows={5}
@@ -162,25 +203,39 @@ export default function Generator() {
               className="w-full bg-transparent px-5 py-4 text-sm text-[#c8c5be] placeholder-[#3a3a4a] resize-none outline-none leading-relaxed"
             />
 
-            <div className="flex items-center justify-between px-4 py-2.5 border-t border-[#1e1e2e] bg-[#0a0a12]">
-              <span className="text-[#3a3a4a] text-xs">{g.shortcut}</span>
-              <button
-                onClick={handleGenerate}
-                disabled={!prompt.trim() || loading}
-                className="flex items-center gap-2.5 px-5 py-2 bg-[#ff6b35] text-[#0a0a0f] text-xs font-bold tracking-widest uppercase rounded-sm hover:bg-[#ff8555] disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 active:scale-95"
-              >
-                {loading ? (
-                  <>
-                    <LoadingSpinner />
-                    {g.generating}
-                  </>
-                ) : (
-                  <>
-                    <span>▶</span>
-                    {g.generate}
-                  </>
-                )}
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-t border-[#1e1e2e] bg-[#0a0a12]">
+              <span className="text-[#3a3a4a] text-xs hidden sm:inline">{g.shortcut}</span>
+              <div className="flex items-center gap-4 ml-auto">
+                <button
+                  onClick={handleGenerate}
+                  disabled={!prompt.trim() || loading}
+                  className="text-xs text-[#6b6b7b] hover:text-[#e8e6e0] underline-offset-4 hover:underline disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  {g.skipQuestions}
+                </button>
+                <button
+                  onClick={handleAsk}
+                  disabled={!prompt.trim() || loading}
+                  className="flex items-center gap-2.5 px-5 py-2 bg-[#ff6b35] text-[#0a0a0f] text-xs font-bold tracking-widest uppercase rounded-sm hover:bg-[#ff8555] disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 active:scale-95"
+                >
+                  {busy === "asking" ? (
+                    <>
+                      <LoadingSpinner />
+                      {g.asking}
+                    </>
+                  ) : busy === "generating" ? (
+                    <>
+                      <LoadingSpinner />
+                      {g.generating}
+                    </>
+                  ) : (
+                    <>
+                      <span>▶</span>
+                      {g.next}
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -202,6 +257,21 @@ export default function Generator() {
           </div>
         </section>
 
+        {/* Clarifying questions */}
+        {questions && !loading && (
+          <QuestionsPanel
+            questions={questions}
+            answers={answers}
+            onAnswer={(id, value) => setAnswers((prev) => ({ ...prev, [id]: value }))}
+            onGenerate={handleGenerate}
+            onBack={() => {
+              setQuestions(null);
+              textareaRef.current?.focus();
+            }}
+            busy={loading}
+          />
+        )}
+
         {/* Error */}
         {error && (
           <div className="mb-6 border border-[#ff5f57]/40 bg-[#ff5f57]/5 rounded-sm px-4 py-3">
@@ -217,10 +287,12 @@ export default function Generator() {
           <div className="mb-6 border border-[#1e1e2e] bg-[#0d0d17] rounded-sm px-5 py-6">
             <div className="flex items-center gap-3 mb-4">
               <LoadingSpinner />
-              <span className="text-[#ff6b35] text-xs tracking-widest uppercase">{g.loadingTitle}</span>
+              <span className="text-[#ff6b35] text-xs tracking-widest uppercase">
+                {busy === "asking" ? g.askingTitle : g.loadingTitle}
+              </span>
             </div>
             <div className="space-y-2">
-              {g.loadingSteps.map((step, i) => (
+              {(busy === "asking" ? g.askingSteps : g.loadingSteps).map((step, i) => (
                 <div key={i} className="flex items-center gap-2.5">
                   <span className="text-[#28c840] text-xs animate-pulse">▸</span>
                   <span className="text-[#3a3a4a] text-xs">{step}</span>
@@ -295,18 +367,9 @@ export default function Generator() {
               </div>
             </div>
 
-            {/* Import instructions */}
-            <div className="mt-4 border border-[#1e1e2e] bg-[#0a0a12] rounded-sm px-4 py-3">
-              <p className="text-[#3a3a4a] text-xs mb-1.5 tracking-widest uppercase">{g.howToImport}</p>
-              <ol className="text-[#4a4a5a] text-xs space-y-1">
-                {g.importSteps.map((step, i) => (
-                  <li key={i}>
-                    <span className="text-[#ff6b35] mr-2">{`[${i + 1}]`}</span>
-                    {step}
-                  </li>
-                ))}
-              </ol>
-            </div>
+            {generatedFrom && (
+              <SetupGuide workflow={workflow} request={generatedFrom.request} answers={generatedFrom.answers} />
+            )}
           </section>
         )}
       </div>
