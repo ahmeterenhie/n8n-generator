@@ -1,4 +1,5 @@
 import type { Lang } from "@/lib/dictionaries";
+import type { Plan } from "@/lib/plan";
 
 // Sample workflows for demo mode (no API key). One per example prompt on the
 // generator page; the prompt's keywords pick which one is shown.
@@ -303,4 +304,43 @@ export function demoWorkflow(prompt: string, lang: Lang) {
   if (/airtable|form|gmail|e-?posta|email|mail/.test(p)) return formToAirtable(lang);
   if (/reddit|sheets|tablo|her gün|every day|daily|günlük|schedule|zamanla|cron|\b9/.test(p)) return redditToSheets(lang);
   return webhookToSlack(lang);
+}
+
+const DEMO_SERVICES: Record<string, string> = {
+  slack: "Slack",
+  googleSheets: "Google Sheets",
+  airtable: "Airtable",
+  gmail: "Gmail",
+};
+
+/** A reviewable plan for demo mode, built from the matching sample workflow. */
+export function demoPlan(prompt: string, lang: Lang): Plan {
+  const wf = demoWorkflow(prompt, lang);
+  const types = wf.nodes.map((n) => n.type.replace("n8n-nodes-base.", ""));
+  return {
+    summary:
+      lang === "tr"
+        ? `Demo planı: "${wf.name}". Gerçek bir planda adımlar isteğine ve cevaplarına göre hazırlanır.`
+        : `Demo plan: "${wf.name}". A real plan is built from your request and answers.`,
+    workflows: [
+      {
+        key: "main",
+        name: wf.name,
+        role: "main",
+        trigger: wf.nodes[0].name,
+        steps: wf.nodes.map((n, i) => {
+          const params = n.parameters as Record<string, unknown>;
+          return {
+            id: `main-s${i + 1}`,
+            description: n.name,
+            node: n.type,
+            resource: typeof params.resource === "string" ? params.resource : undefined,
+            operation: typeof params.operation === "string" ? params.operation : undefined,
+          };
+        }),
+      },
+    ],
+    credentials: [...new Set(types.map((t) => DEMO_SERVICES[t]).filter(Boolean))],
+    assumptions: [lang === "tr" ? "Demo modunda plan değişiklikleri uygulanmaz; örnek iş akışı gösterilir." : "Demo mode does not apply plan changes; a sample workflow is shown."],
+  };
 }

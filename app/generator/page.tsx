@@ -1,149 +1,202 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Shell } from "@/components/Shell";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PlanPanel } from "@/components/PlanPanel";
+import { ProgressPanel, Spinner } from "@/components/ProgressPanel";
+import { ProjectResult } from "@/components/ProjectResult";
 import { QuestionsPanel } from "@/components/QuestionsPanel";
-import { SetupGuide } from "@/components/SetupGuide";
-import { ValidationPanel, type ValidationSummary } from "@/components/ValidationPanel";
-import { WorkflowDiagram } from "@/components/WorkflowDiagram";
+import { Shell } from "@/components/Shell";
+import { ApiRequestError, postJson, postStream } from "@/lib/apiClient";
 import { activeConnection, loadApiConfig, needsKey, type Connection, type Provider } from "@/lib/apiConfig";
-import type { ClarifyAnswer, ClarifyQuestion } from "@/lib/clarify";
+import { MAX_CLARIFY_ROUNDS, type ClarifyAnswer, type ClarifyQuestion } from "@/lib/clarify";
 import { translateError, useI18n } from "@/lib/i18n";
+import type { BuiltWorkflow, Progress } from "@/lib/pipeline";
+import type { Plan } from "@/lib/plan";
+
+// Flow: describe → questions (rounds) → plan (review, edit, approve) → build (streamed) → result.
+// "Generate directly" skips questions and plan review; an uploaded JSON goes straight to the result.
+
+type Stage = "describe" | "questions" | "plan" | "building" | "result";
+type Busy = null | "asking" | "planning" | "revising" | "building" | "uploading";
+
+interface ProjectState {
+  workflows: BuiltWorkflow[];
+  demo: boolean;
+  request: string;
+  answers: ClarifyAnswer[];
+}
 
 export default function Generator() {
   const { t, lang } = useI18n();
   const g = t.generator;
-  const [prompt, setPrompt] = useState("");
-  const [result, setResult] = useState<string | null>(null);
-  const [isDemo, setIsDemo] = useState(false);
-  const [validation, setValidation] = useState<ValidationSummary | null>(null);
-  // Which request is running: fetching questions or generating the workflow
-  const [busy, setBusy] = useState<"asking" | "generating" | null>(null);
-  const loading = busy !== null;
-  const [questions, setQuestions] = useState<ClarifyQuestion[] | null>(null);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  // Request + answers the current result was built from (for the setup prompt)
-  const [generatedFrom, setGeneratedFrom] = useState<{ request: string; answers: ClarifyAnswer[] } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  // Provider, key and model saved on the API page
   const [conn, setConn] = useState<(Connection & { provider: Provider }) | null>(null);
-  const [view, setView] = useState<"diagram" | "json">("diagram");
+  const [prompt, setPrompt] = useState("");
+  const [stage, setStage] = useState<Stage>("describe");
+  const [busy, setBusy] = useState<Busy>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [round, setRound] = useState(1);
+  const [questions, setQuestions] = useState<ClarifyQuestion[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Every question asked in earlier rounds, with its answer ("" = skipped)
+  const [history, setHistory] = useState<ClarifyAnswer[]>([]);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [progress, setProgress] = useState<Progress[]>([]);
+  const [project, setProject] = useState<ProjectState | null>(null);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // localStorage is only available after mount
   useEffect(() => setConn(activeConnection(loadApiConfig())), []);
 
-  const postJson = useCallback(
-    async (url: string, extra: Record<string, unknown>) => {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: prompt.trim(),
-          provider: conn?.provider,
-          apiKey: conn?.apiKey,
-          model: conn?.model,
-          lang,
-          ...extra,
-        }),
-      });
-      // Non-JSON responses (e.g. an HTML error page) would otherwise surface as a cryptic parse error
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(translateError(t, data, res.status));
-      return data;
-    },
-    [prompt, conn, lang, t]
+  const connBody = { provider: conn?.provider, apiKey: conn?.apiKey, model: conn?.model, lang };
+
+  const fail = useCallback(
+    (err: unknown) => setError(err instanceof ApiRequestError ? translateError(t, err.data, err.status) : t.errors.SERVER),
+    [t]
   );
 
-  // Step 1: ask a few clarifying questions about the description
-  const handleAsk = useCallback(async () => {
-    if (!prompt.trim() || loading) return;
-    setBusy("asking");
+  /** Questions of the current round with the answers given so far. */
+  const currentRound = (): ClarifyAnswer[] => questions.map((q) => ({ question: q.question, answer: answers[q.id]?.trim() ?? "" }));
+
+  const makePlan = async (answered: ClarifyAnswer[], revision?: { plan: Plan; feedback: string }) => {
+    setBusy(revision ? "revising" : "planning");
     setError(null);
-    setQuestions(null);
     try {
-      const data = await postJson("/api/clarify", {});
-      setAnswers({});
-      setQuestions(data.questions);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t.errors.SERVER);
+      const data = await postJson<{ plan: Plan }>("/api/plan", {
+        prompt: prompt.trim(),
+        answers: answered,
+        ...(revision && { plan: revision.plan, feedback: revision.feedback }),
+        ...connBody,
+      });
+      setPlan(data.plan);
+      setStage("plan");
+    } catch (err) {
+      fail(err);
     } finally {
       setBusy(null);
     }
-  }, [prompt, loading, postJson, t]);
-
-  // Step 2: generate, with whatever answers were given (none when skipped)
-  const handleGenerate = useCallback(async () => {
-    if (!prompt.trim() || loading) return;
-    const given: ClarifyAnswer[] = (questions ?? [])
-      .map((q) => ({ question: q.question, answer: answers[q.id]?.trim() ?? "" }))
-      .filter((a) => a.answer);
-    setBusy("generating");
-    setError(null);
-    setResult(null);
-    setCopied(false);
-    try {
-      const data = await postJson("/api/generate", { answers: given });
-      setResult(JSON.stringify(data.workflow, null, 2));
-      setIsDemo(data.demo === true);
-      setValidation(data.validation ?? null);
-      setGeneratedFrom({ request: prompt.trim(), answers: given });
-      setQuestions(null);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t.errors.SERVER);
-    } finally {
-      setBusy(null);
-    }
-  }, [prompt, loading, questions, answers, postJson, t]);
-
-  const handleCopy = useCallback(async () => {
-    if (!result) return;
-    await navigator.clipboard.writeText(result);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [result]);
-
-  const handleDownload = useCallback(() => {
-    if (!result) return;
-    const blob = new Blob([result], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `n8n-workflow-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [result]);
-
-  const workflow = useMemo(() => (result ? (JSON.parse(result) as Record<string, unknown>) : null), [result]);
-
-  const stats = useMemo(() => {
-    if (!result || !workflow) return null;
-    const parsed = workflow as { nodes?: unknown[]; connections?: object };
-    return {
-      nodes: parsed?.nodes?.length ?? 0,
-      connections: Object.keys(parsed?.connections ?? {}).length,
-      bytes: new Blob([result]).size,
-    };
-  }, [result, workflow]);
-
-  // Questions belong to the description they were asked about
-  const updatePrompt = (value: string) => {
-    setPrompt(value);
-    setQuestions(null);
   };
 
-  const handleExampleClick = (example: string) => {
-    updatePrompt(example);
+  const ask = async (nextRound: number, asked: ClarifyAnswer[]) => {
+    setBusy("asking");
+    setError(null);
+    try {
+      const data = await postJson<{ done: boolean; questions: ClarifyQuestion[] }>("/api/clarify", {
+        prompt: prompt.trim(),
+        history: asked,
+        round: nextRound,
+        ...connBody,
+      });
+      if (data.done || !data.questions.length) {
+        setBusy(null);
+        await makePlan(asked);
+        return;
+      }
+      setRound(nextRound);
+      setQuestions(data.questions);
+      setAnswers({});
+      setStage("questions");
+    } catch (err) {
+      fail(err);
+    } finally {
+      setBusy((b) => (b === "asking" ? null : b));
+    }
+  };
+
+  const start = () => {
+    if (!prompt.trim() || busy) return;
+    setHistory([]);
+    setPlan(null);
+    ask(1, []);
+  };
+
+  const continueQuestions = () => {
+    const asked = [...history, ...currentRound()];
+    setHistory(asked);
+    ask(round + 1, asked);
+  };
+
+  const enoughQuestions = () => {
+    const asked = [...history, ...currentRound()];
+    setHistory(asked);
+    makePlan(asked);
+  };
+
+  const build = async (approved: Plan | null) => {
+    setBusy("building");
+    setError(null);
+    setProgress([]);
+    setStage("building");
+    const asked = approved ? history : [];
+    try {
+      const data = await postStream<{ workflows: BuiltWorkflow[]; demo?: boolean }>(
+        "/api/generate",
+        { prompt: prompt.trim(), answers: asked, ...(approved && { plan: approved }), ...connBody },
+        (e) => setProgress((prev) => [...prev, e as unknown as Progress])
+      );
+      setProject({ workflows: data.workflows, demo: data.demo === true, request: prompt.trim(), answers: asked.filter((a) => a.answer) });
+      setStage("result");
+    } catch (err) {
+      fail(err);
+      setStage(approved ? "plan" : "describe");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const generateDirectly = () => {
+    if (!prompt.trim() || busy) return;
+    setHistory([]);
+    setPlan(null);
+    build(null);
+  };
+
+  const upload = async (file: File) => {
+    setBusy("uploading");
+    setError(null);
+    try {
+      const workflow = JSON.parse(await file.text());
+      const data = await postJson<{ workflow: BuiltWorkflow["workflow"]; validation: BuiltWorkflow["validation"] }>(
+        "/api/validate",
+        { workflow }
+      );
+      const name = typeof data.workflow.name === "string" ? data.workflow.name : file.name.replace(/\.json$/i, "");
+      setProject({
+        workflows: [{ key: "uploaded", name, role: "main", workflow: data.workflow, validation: data.validation }],
+        demo: false,
+        request: name,
+        answers: [],
+      });
+      setStage("result");
+    } catch (err) {
+      if (err instanceof ApiRequestError) fail(err);
+      else setError(g.uploadInvalid);
+    } finally {
+      setBusy(null);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  // Questions and plan belong to the description they were made for
+  const updatePrompt = (value: string) => {
+    setPrompt(value);
+    if (stage === "questions" || stage === "plan") setStage("describe");
+  };
+
+  const reset = () => {
+    setStage("describe");
+    setProject(null);
+    setPlan(null);
+    setHistory([]);
+    setPrompt("");
+    setError(null);
     textareaRef.current?.focus();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      handleAsk();
-    }
-  };
+  const loading = busy !== null;
 
   return (
     <Shell variant="app">
@@ -168,10 +221,9 @@ export default function Generator() {
           </div>
         )}
 
-        {/* Input Section */}
+        {/* Description */}
         <section className="mb-8">
           <div className="border border-[#1e1e2e] bg-[#0d0d17] rounded-sm overflow-hidden focus-within:border-[#ff6b35] transition-colors duration-200">
-            {/* Terminal bar */}
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
               <span className="text-[#4a4a5a] text-xs tracking-widest">{g.fileLabel}</span>
               <div className="flex items-center gap-3">
@@ -199,7 +251,9 @@ export default function Generator() {
               ref={textareaRef}
               value={prompt}
               onChange={(e) => updatePrompt(e.target.value)}
-              onKeyDown={handleKeyDown}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") start();
+              }}
               maxLength={1000}
               rows={5}
               placeholder={g.placeholder}
@@ -210,26 +264,21 @@ export default function Generator() {
               <span className="text-[#3a3a4a] text-xs hidden sm:inline">{g.shortcut}</span>
               <div className="flex items-center gap-4 ml-auto">
                 <button
-                  onClick={handleGenerate}
+                  onClick={generateDirectly}
                   disabled={!prompt.trim() || loading}
                   className="text-xs text-[#6b6b7b] hover:text-[#e8e6e0] underline-offset-4 hover:underline disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
                   {g.skipQuestions}
                 </button>
                 <button
-                  onClick={handleAsk}
+                  onClick={start}
                   disabled={!prompt.trim() || loading}
                   className="flex items-center gap-2.5 px-5 py-2 bg-[#ff6b35] text-[#0a0a0f] text-xs font-bold tracking-widest uppercase rounded-sm hover:bg-[#ff8555] disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 active:scale-95"
                 >
-                  {busy === "asking" ? (
+                  {busy === "asking" || busy === "planning" ? (
                     <>
-                      <LoadingSpinner />
+                      <Spinner />
                       {g.asking}
-                    </>
-                  ) : busy === "generating" ? (
-                    <>
-                      <LoadingSpinner />
-                      {g.generating}
                     </>
                   ) : (
                     <>
@@ -242,38 +291,50 @@ export default function Generator() {
             </div>
           </div>
 
-          {/* Examples */}
-          <div className="mt-4">
-            <p className="text-[#3a3a4a] text-xs mb-2.5 tracking-widest uppercase">{g.tryExample}</p>
-            <div className="flex flex-col gap-1.5">
-              {g.examples.map((ex, i) => (
+          {/* Examples and upload */}
+          {stage === "describe" && (
+            <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-[#3a3a4a] text-xs mb-2.5 tracking-widest uppercase">{g.tryExample}</p>
+                <div className="flex flex-col gap-1.5">
+                  {g.examples.map((ex, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        updatePrompt(ex);
+                        textareaRef.current?.focus();
+                      }}
+                      className="text-left text-xs text-[#4a4a6a] hover:text-[#ff6b35] transition-colors duration-150 truncate"
+                    >
+                      <span className="text-[#2a2a3a] mr-2">{`[${i + 1}]`}</span>
+                      {ex}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="shrink-0">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) upload(file);
+                  }}
+                />
                 <button
-                  key={i}
-                  onClick={() => handleExampleClick(ex)}
-                  className="text-left text-xs text-[#4a4a6a] hover:text-[#ff6b35] transition-colors duration-150 truncate"
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={loading}
+                  className="flex items-center gap-2 text-xs text-[#6b6b7b] hover:text-[#ff6b35] border border-dashed border-[#2a2a3a] hover:border-[#ff6b35] rounded-sm px-3 py-2 disabled:opacity-30 transition-colors"
                 >
-                  <span className="text-[#2a2a3a] mr-2">{`[${i + 1}]`}</span>
-                  {ex}
+                  {busy === "uploading" ? <Spinner /> : "⤒"} {g.upload}
                 </button>
-              ))}
+              </div>
             </div>
-          </div>
+          )}
         </section>
-
-        {/* Clarifying questions */}
-        {questions && !loading && (
-          <QuestionsPanel
-            questions={questions}
-            answers={answers}
-            onAnswer={(id, value) => setAnswers((prev) => ({ ...prev, [id]: value }))}
-            onGenerate={handleGenerate}
-            onBack={() => {
-              setQuestions(null);
-              textareaRef.current?.focus();
-            }}
-            busy={loading}
-          />
-        )}
 
         {/* Error */}
         {error && (
@@ -285,17 +346,15 @@ export default function Generator() {
           </div>
         )}
 
-        {/* Loading State */}
-        {loading && (
+        {/* Waiting for questions or the plan */}
+        {(busy === "asking" || busy === "planning") && (
           <div className="mb-6 border border-[#1e1e2e] bg-[#0d0d17] rounded-sm px-5 py-6">
-            <div className="flex items-center gap-3 mb-4">
-              <LoadingSpinner />
-              <span className="text-[#ff6b35] text-xs tracking-widest uppercase">
-                {busy === "asking" ? g.askingTitle : g.loadingTitle}
-              </span>
+            <div className="flex items-center gap-3 mb-4 text-[#ff6b35]">
+              <Spinner />
+              <span className="text-xs tracking-widest uppercase">{busy === "asking" ? g.askingTitle : g.planningTitle}</span>
             </div>
             <div className="space-y-2">
-              {(busy === "asking" ? g.askingSteps : g.loadingSteps).map((step, i) => (
+              {(busy === "asking" ? g.askingSteps : g.planningSteps).map((step, i) => (
                 <div key={i} className="flex items-center gap-2.5">
                   <span className="text-[#28c840] text-xs animate-pulse">▸</span>
                   <span className="text-[#3a3a4a] text-xs">{step}</span>
@@ -305,102 +364,57 @@ export default function Generator() {
           </div>
         )}
 
-        {/* Result */}
-        {result && workflow && stats && !loading && (
-          <section>
-            <div className="border border-[#1e1e2e] bg-[#0d0d17] rounded-sm overflow-hidden">
-              {/* Result header */}
-              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
-                <div className="flex items-center gap-3">
-                  <span className="hidden sm:flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-[#28c840] animate-pulse" />
-                    <span className="text-[#28c840] text-xs tracking-widest">{g.resultLabel}</span>
-                  </span>
-                  <div className="flex border border-[#1e1e2e] rounded-sm overflow-hidden" role="tablist">
-                    {(["diagram", "json"] as const).map((v) => (
-                      <button
-                        key={v}
-                        role="tab"
-                        aria-selected={view === v}
-                        onClick={() => setView(v)}
-                        className={`px-3 py-1 text-[11px] font-bold tracking-widest transition-colors ${
-                          view === v ? "bg-[#ff6b35]/15 text-[#ff6b35]" : "text-[#6b6b7b] hover:text-[#e8e6e0]"
-                        }`}
-                      >
-                        {v === "diagram" ? g.viewDiagram : g.viewJson}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleCopy}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#6b6b7b] hover:text-[#e8e6e0] border border-[#1e1e2e] hover:border-[#3a3a4a] rounded-sm transition-all duration-150"
-                  >
-                    {copied ? <span className="text-[#28c840]">{g.copied}</span> : g.copy}
-                  </button>
-                  <button
-                    onClick={handleDownload}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#0a0a0f] bg-[#ff6b35] hover:bg-[#ff8555] rounded-sm transition-all duration-150 font-bold"
-                  >
-                    {g.download}
-                  </button>
-                </div>
-              </div>
+        {stage === "questions" && busy !== "asking" && busy !== "planning" && (
+          <QuestionsPanel
+            questions={questions}
+            answers={answers}
+            round={round}
+            maxRounds={MAX_CLARIFY_ROUNDS}
+            onAnswer={(id, value) => setAnswers((prev) => ({ ...prev, [id]: value }))}
+            onContinue={continueQuestions}
+            onEnough={enoughQuestions}
+            onBack={() => {
+              setStage("describe");
+              textareaRef.current?.focus();
+            }}
+            busy={loading}
+          />
+        )}
 
-              {isDemo && (
-                <p className="px-4 py-2 border-b border-[#1e1e2e] text-[11px] text-[#febc2e] bg-[#febc2e]/5">
-                  {g.demoNotice}
-                </p>
-              )}
+        {stage === "plan" && plan && busy !== "planning" && (
+          <PlanPanel
+            plan={plan}
+            onChange={setPlan}
+            onApprove={() => build(plan)}
+            onRevise={(feedback) => makePlan(history, { plan, feedback })}
+            onBack={() => setStage(questions.length ? "questions" : "describe")}
+            busy={loading}
+            revising={busy === "revising"}
+          />
+        )}
 
-              {view === "diagram" ? (
-                <WorkflowDiagram workflow={workflow} />
-              ) : (
-                <pre className="overflow-auto max-h-[480px] px-5 py-4 text-xs text-[#a8a59e] leading-relaxed scrollbar-thin">
-                  <code>{result}</code>
-                </pre>
-              )}
+        {stage === "building" && <ProgressPanel events={progress} />}
 
-              {validation && <ValidationPanel validation={validation} />}
-
-              {/* Stats footer */}
-              <div className="flex items-center gap-4 px-4 py-2.5 border-t border-[#1e1e2e] bg-[#0a0a12]">
-                <Stat label={g.nodes} value={stats.nodes.toString()} />
-                <Stat label={g.connections} value={stats.connections.toString()} />
-                <Stat label={g.bytes} value={stats.bytes.toLocaleString()} />
-              </div>
+        {stage === "result" && project && (
+          <>
+            <div className="mb-3 flex justify-end">
+              <button type="button" onClick={reset} className="text-xs text-[#6b6b7b] hover:text-[#ff6b35]">
+                {g.newRequest}
+              </button>
             </div>
-
-            {generatedFrom && (
-              <SetupGuide
-                workflow={workflow}
-                request={generatedFrom.request}
-                answers={generatedFrom.answers}
-                openIssues={validation?.errors ?? []}
-              />
-            )}
-          </section>
+            <ProjectResult
+              workflows={project.workflows}
+              isDemo={project.demo}
+              request={project.request}
+              answers={project.answers}
+              conn={conn}
+              onReplace={(index, updated) =>
+                setProject((p) => (p ? { ...p, workflows: p.workflows.map((w, i) => (i === index ? updated : w)) } : p))
+              }
+            />
+          </>
         )}
       </div>
     </Shell>
-  );
-}
-
-function LoadingSpinner() {
-  return (
-    <svg className="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-    </svg>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-[#ff6b35] text-xs tabular-nums font-bold">{value}</span>
-      <span className="text-[#3a3a4a] text-xs">{label}</span>
-    </div>
   );
 }

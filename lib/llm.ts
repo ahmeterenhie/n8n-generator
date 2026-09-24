@@ -92,9 +92,15 @@ function mapError(err: unknown): LlmError {
   return new LlmError("UPSTREAM", message, 502);
 }
 
-export function errorResponse(err: unknown) {
+/** Error details for any failure: { code, error } plus the HTTP status to use. */
+export function errorInfo(err: unknown): { code: string; error: string; status: number } {
   const e = mapError(err);
-  return NextResponse.json({ code: e.code, error: e.message }, { status: e.status });
+  return { code: e.code, error: e.message, status: e.status };
+}
+
+export function errorResponse(err: unknown) {
+  const { status, ...body } = errorInfo(err);
+  return NextResponse.json(body, { status });
 }
 
 /** Sends one system + user prompt and returns the model's text output. */

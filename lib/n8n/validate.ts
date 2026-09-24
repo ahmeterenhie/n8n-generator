@@ -35,6 +35,9 @@ type Connections = Record<string, Record<string, unknown>>;
 
 const PLACEHOLDER = /YOUR_[A-Z0-9_]+/;
 
+// Fields the user picks in n8n after connecting accounts or importing sub-workflows
+const PICKER_TYPES = new Set(["resourceLocator", "workflowSelector"]);
+
 /** Fills in fields n8n needs but that carry no meaning (ids, positions, defaults). */
 export function normalizeWorkflow(workflow: WorkflowLike): Record<string, unknown> {
   const nodes = (Array.isArray(workflow.nodes) ? workflow.nodes : []).map((n: RawNode, i: number) => ({
@@ -86,7 +89,7 @@ function checkNodeParameters(node: INode, type: CatalogNode, result: ValidationR
   // Sheets columns after the sheet). Judge visibility as if those were filled.
   const filled: INodeParameters = { ...resolved };
   for (const p of type.properties) {
-    if (p.type === "resourceLocator" && isEmptyValue(filled[p.name])) {
+    if (PICKER_TYPES.has(p.type) && isEmptyValue(filled[p.name])) {
       filled[p.name] = { __rl: true, mode: "id", value: "picked-by-user" };
     }
   }
@@ -126,7 +129,7 @@ function checkNodeParameters(node: INode, type: CatalogNode, result: ValidationR
   for (const [param, messages] of Object.entries(issues?.parameters ?? {})) {
     const value = resolved[param];
     const prop = type.properties.find((p) => p.name === param);
-    const userMustFill = hasPlaceholder(value) || (prop?.type === "resourceLocator" && isEmptyValue(value));
+    const userMustFill = hasPlaceholder(value) || (!!prop && PICKER_TYPES.has(prop.type) && isEmptyValue(value));
     for (const message of messages) {
       const issue = { node: node.name, message: `${param}: ${message}` };
       if (userMustFill) {

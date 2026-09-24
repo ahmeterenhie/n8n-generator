@@ -3,28 +3,24 @@
 import { useMemo, useState } from "react";
 import type { ClarifyAnswer } from "@/lib/clarify";
 import { useI18n } from "@/lib/i18n";
-import type { ValidationIssue } from "@/lib/n8n/validate";
-import { buildSetupPrompt } from "@/lib/setupPrompt";
+import { buildSetupPrompt, type SetupWorkflow } from "@/lib/setupPrompt";
 
 /** Ready-to-paste prompt that lets any AI assistant walk the user through setup. */
 export function SetupGuide({
-  workflow,
+  workflows,
   request,
   answers,
-  openIssues,
 }: {
-  workflow: Record<string, unknown>;
+  workflows: SetupWorkflow[];
   request: string;
   answers: ClarifyAnswer[];
-  /** Problems the automatic check could not fix */
-  openIssues: ValidationIssue[];
 }) {
   const { t, lang } = useI18n();
   const s = t.setup;
   const [copied, setCopied] = useState(false);
   const prompt = useMemo(
-    () => buildSetupPrompt({ workflow, request, answers, lang, openIssues }),
-    [workflow, request, answers, lang, openIssues]
+    () => buildSetupPrompt({ workflows, request, answers, lang }),
+    [workflows, request, answers, lang]
   );
 
   const handleCopy = async () => {

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import type { INodeProperties, INodeTypeDescription } from "n8n-workflow";
+import { NodeHelpers, type INodeProperties, type INodeTypeDescription } from "n8n-workflow";
 
 // The official n8n node catalog (data/n8n-catalog.json.gz, built by
 // scripts/update-n8n-catalog.mjs). Server-side only.
@@ -130,6 +130,27 @@ export function coreNodes(): CatalogNode[] {
 
 // ─── Rendering specs for the model ───────────────────────────────────────────
 
+/**
+ * n8n defines some parameters once per version range ("@version" conditions).
+ * Keep only the definitions that apply to the node's default version, using
+ * n8n's own condition logic on the version part of displayOptions.
+ */
+function appliesToDefaultVersion(p: INodeProperties, node: CatalogNode): boolean {
+  const display = p.displayOptions;
+  if (!display) return true;
+  const onlyVersion = (conds?: Record<string, unknown>) =>
+    conds && "@version" in conds ? { "@version": conds["@version"] } : undefined;
+  const show = onlyVersion(display.show as Record<string, unknown> | undefined);
+  const hide = onlyVersion(display.hide as Record<string, unknown> | undefined);
+  if (!show && !hide) return true;
+  const versionOnly = { ...p, displayOptions: { ...(show && { show }), ...(hide && { hide }) } } as INodeProperties;
+  return NodeHelpers.displayParameter({}, versionOnly, { typeVersion: node.defaultVersion }, node);
+}
+
+export function currentProperties(node: CatalogNode): INodeProperties[] {
+  return node.properties.filter((p) => appliesToDefaultVersion(p, node));
+}
+
 const MAX_SPEC_CHARS = 9000;
 
 function formatValue(value: unknown): string {
@@ -193,8 +214,9 @@ function valuesOf(p: INodeProperties | undefined): string[] {
 
 /** Resources and the operations each offers, e.g. "message: post, update, delete". */
 function operationMap(node: CatalogNode): string[] {
-  const resource = node.properties.find((p) => p.name === "resource" && p.type === "options");
-  const operations = node.properties.filter((p) => p.name === "operation" && p.type === "options");
+  const props = currentProperties(node);
+  const resource = props.find((p) => p.name === "resource" && p.type === "options");
+  const operations = props.filter((p) => p.name === "operation" && p.type === "options");
   if (!resource) return operations.length ? [`operations: ${valuesOf(operations[0]).join(", ")}`] : [];
   return valuesOf(resource).map((r) => {
     const ops = operations.find((o) => (o.displayOptions?.show?.resource as unknown[] | undefined)?.includes(r));
@@ -234,7 +256,7 @@ export function renderNodeSpec(node: CatalogNode, choice: NodeChoice = {}): stri
     header.push(`Showing parameters for resource "${choice.resource ?? "-"}", operation "${choice.operation ?? "-"}".`);
   }
 
-  const props = node.properties.filter((p) => matchesChoice(p, choice));
+  const props = currentProperties(node).filter((p) => matchesChoice(p, choice));
   const body = ["Parameters:", ...props.flatMap((p) => formatProperty(p, ""))];
   let text = [...header, ...body].join("\n");
   if (text.length > MAX_SPEC_CHARS) text = text.slice(0, MAX_SPEC_CHARS) + "\n… (more optional parameters omitted)";
