@@ -9,6 +9,7 @@ import {
   PROVIDERS,
   loadApiConfig,
   maskKey,
+  needsKey,
   saveApiConfig,
   type ApiConfig,
   type Provider,
@@ -50,9 +51,7 @@ export default function Settings() {
   useEffect(() => {
     const cfg = loadApiConfig();
     setConfig(cfg);
-    // Open on the provider in use; with nothing saved yet, start on Claude
-    const hasAnyKey = PROVIDERS.some((p) => cfg.connections[p].apiKey);
-    loadForm(cfg, hasAnyKey ? cfg.provider : "anthropic");
+    loadForm(cfg, cfg.provider);
   }, []);
 
   if (!config) return <Shell variant="app">{null}</Shell>;
@@ -60,6 +59,9 @@ export default function Settings() {
   const p = s.providers[provider];
   const model = modelChoice === CUSTOM ? customModel.trim() : modelChoice;
   const activeConn = config.connections[config.provider];
+  const withKey = needsKey(provider);
+  const activeUsable = !needsKey(config.provider) || !!activeConn.apiKey;
+  const canSave = !withKey || (!!apiKey.trim() && !!model);
 
   const handleTest = async () => {
     setTest({ kind: "testing" });
@@ -110,11 +112,13 @@ export default function Settings() {
           <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
             <span className="text-[#4a4a5a] text-xs tracking-widest">{s.fileLabel}</span>
             <span className="flex items-center gap-2 text-xs">
-              <span className={`w-2 h-2 rounded-full ${activeConn.apiKey ? "bg-[#28c840]" : "bg-[#4a4a5a]"}`} />
-              <span className={activeConn.apiKey ? "text-[#28c840]" : "text-[#6b6b7b]"}>
-                {activeConn.apiKey
-                  ? `${s.active}: ${s.providers[config.provider].label} · ${activeConn.model}`
-                  : s.notConnected}
+              <span className={`w-2 h-2 rounded-full ${activeUsable ? "bg-[#28c840]" : "bg-[#4a4a5a]"}`} />
+              <span className={activeUsable ? "text-[#28c840]" : "text-[#6b6b7b]"}>
+                {!activeUsable
+                  ? s.notConnected
+                  : needsKey(config.provider)
+                    ? `${s.active}: ${s.providers[config.provider].label} · ${activeConn.model}`
+                    : `${s.active}: ${s.providers[config.provider].label}`}
               </span>
             </span>
           </div>
@@ -155,71 +159,81 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* API key */}
-            <div>
-              <label htmlFor="apiKey" className="block mb-1.5 text-[11px] tracking-widest uppercase text-[#6b6b7b]">
-                {/* lang="en" keeps the brand name from Turkish uppercasing (i → İ) */}
-                <span lang="en">{p.vendor}</span> {s.apiKey}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="apiKey"
-                  type={showKey ? "text" : "password"}
-                  value={apiKey}
-                  onChange={(e) => {
-                    setApiKey(e.target.value);
-                    setTest({ kind: "idle" });
-                  }}
-                  placeholder={p.keyPlaceholder}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="input flex-1 min-w-0"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowKey((v) => !v)}
-                  className="px-3 text-xs text-[#6b6b7b] hover:text-[#e8e6e0] border border-[#1e1e2e] hover:border-[#3a3a4a] rounded-sm transition-colors"
-                >
-                  {showKey ? s.hide : s.show}
-                </button>
-              </div>
-              <p className="mt-1.5 text-[11px] text-[#4a4a5a]">{p.keyHelp}</p>
-            </div>
+            {!withKey && (
+              <p className="text-xs leading-relaxed text-[#a8a59e] border border-[#febc2e]/25 bg-[#febc2e]/5 rounded-sm px-3 py-2.5">
+                {s.demoInfo}
+              </p>
+            )}
 
-            {/* Model */}
-            <div>
-              <span className="block mb-1.5 text-[11px] tracking-widest uppercase text-[#6b6b7b]">{s.model}</span>
-              <div className="flex flex-wrap gap-2">
-                {[...MODEL_OPTIONS[provider], CUSTOM].map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => {
-                      setModelChoice(m);
+            {/* API key */}
+            {withKey && (
+              <div>
+                <label htmlFor="apiKey" className="block mb-1.5 text-[11px] tracking-widest uppercase text-[#6b6b7b]">
+                  {/* lang="en" keeps the brand name from Turkish uppercasing (i → İ) */}
+                  <span lang="en">{p.vendor}</span> {s.apiKey}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    id="apiKey"
+                    type={showKey ? "text" : "password"}
+                    value={apiKey}
+                    onChange={(e) => {
+                      setApiKey(e.target.value);
                       setTest({ kind: "idle" });
                     }}
-                    aria-pressed={modelChoice === m}
-                    className={`px-3 py-1.5 text-xs rounded-sm border transition-colors ${
-                      modelChoice === m
-                        ? "border-[#ff6b35] text-[#ff6b35] bg-[#ff6b35]/10"
-                        : "border-[#1e1e2e] text-[#8b8b9b] hover:border-[#3a3a4a] hover:text-[#e8e6e0]"
-                    }`}
+                    placeholder={p.keyPlaceholder}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="input flex-1 min-w-0"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((v) => !v)}
+                    className="px-3 text-xs text-[#6b6b7b] hover:text-[#e8e6e0] border border-[#1e1e2e] hover:border-[#3a3a4a] rounded-sm transition-colors"
                   >
-                    {m === CUSTOM ? s.custom : m}
+                    {showKey ? s.hide : s.show}
                   </button>
-                ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-[#4a4a5a]">{p.keyHelp}</p>
               </div>
-              {modelChoice === CUSTOM && (
-                <input
-                  value={customModel}
-                  onChange={(e) => setCustomModel(e.target.value)}
-                  placeholder={p.customPlaceholder}
-                  spellCheck={false}
-                  className="input mt-2 w-full"
-                />
-              )}
-              <p className="mt-1.5 text-[11px] text-[#4a4a5a]">{p.modelHelp}</p>
-            </div>
+            )}
+
+            {/* Model */}
+            {withKey && (
+              <div>
+                <span className="block mb-1.5 text-[11px] tracking-widest uppercase text-[#6b6b7b]">{s.model}</span>
+                <div className="flex flex-wrap gap-2">
+                  {[...MODEL_OPTIONS[provider], CUSTOM].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => {
+                        setModelChoice(m);
+                        setTest({ kind: "idle" });
+                      }}
+                      aria-pressed={modelChoice === m}
+                      className={`px-3 py-1.5 text-xs rounded-sm border transition-colors ${
+                        modelChoice === m
+                          ? "border-[#ff6b35] text-[#ff6b35] bg-[#ff6b35]/10"
+                          : "border-[#1e1e2e] text-[#8b8b9b] hover:border-[#3a3a4a] hover:text-[#e8e6e0]"
+                      }`}
+                    >
+                      {m === CUSTOM ? s.custom : m}
+                    </button>
+                  ))}
+                </div>
+                {modelChoice === CUSTOM && (
+                  <input
+                    value={customModel}
+                    onChange={(e) => setCustomModel(e.target.value)}
+                    placeholder={p.customPlaceholder}
+                    spellCheck={false}
+                    className="input mt-2 w-full"
+                  />
+                )}
+                <p className="mt-1.5 text-[11px] text-[#4a4a5a]">{p.modelHelp}</p>
+              </div>
+            )}
 
             {/* Test result */}
             {test.kind === "ok" && (
@@ -235,23 +249,25 @@ export default function Settings() {
 
             {/* Actions */}
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleTest}
-                disabled={!apiKey.trim() || !model || test.kind === "testing"}
-                className="px-4 py-2 text-xs tracking-wider uppercase text-[#e8e6e0] border border-[#3a3a4a] hover:border-[#ff6b35] hover:text-[#ff6b35] rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              >
-                {test.kind === "testing" ? s.testing : s.test}
-              </button>
+              {withKey && (
+                <button
+                  type="button"
+                  onClick={handleTest}
+                  disabled={!apiKey.trim() || !model || test.kind === "testing"}
+                  className="px-4 py-2 text-xs tracking-wider uppercase text-[#e8e6e0] border border-[#3a3a4a] hover:border-[#ff6b35] hover:text-[#ff6b35] rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  {test.kind === "testing" ? s.testing : s.test}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleSave}
-                disabled={!apiKey.trim() || !model}
+                disabled={!canSave}
                 className="px-5 py-2 text-xs font-bold tracking-widest uppercase bg-[#ff6b35] text-[#0a0a0f] hover:bg-[#ff8555] rounded-sm disabled:opacity-30 disabled:cursor-not-allowed transition-colors active:scale-95"
               >
                 {justSaved ? `✓ ${s.saved}` : s.save}
               </button>
-              {config.connections[provider].apiKey && (
+              {withKey && config.connections[provider].apiKey && (
                 <button
                   type="button"
                   onClick={handleRemove}
@@ -265,7 +281,7 @@ export default function Settings() {
 
           <div className="px-5 py-3 border-t border-[#1e1e2e] bg-[#0a0a12] flex flex-wrap items-center justify-between gap-2">
             <p className="text-[11px] text-[#4a4a5a] leading-relaxed max-w-md">🔒 {s.storageNote}</p>
-            {activeConn.apiKey && (
+            {activeUsable && (
               <Link href="/generator" className="text-xs font-bold text-[#ff6b35] hover:text-[#ff8555]">
                 {s.goGenerate}
               </Link>

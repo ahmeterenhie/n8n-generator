@@ -1,17 +1,26 @@
 // Browser-side storage for the user's AI provider connections. Never stored on the server.
 
-export type Provider = "openai" | "anthropic";
+export type Provider = "anthropic" | "openai" | "gemini" | "demo";
 
-export const PROVIDERS: Provider[] = ["anthropic", "openai"];
+export const PROVIDERS: Provider[] = ["anthropic", "openai", "gemini", "demo"];
+
+/** Demo mode shows sample workflows and needs no key. */
+export function needsKey(provider: Provider): boolean {
+  return provider !== "demo";
+}
 
 export const MODEL_OPTIONS: Record<Provider, readonly string[]> = {
-  openai: ["gpt-5-codex", "codex-mini-latest", "gpt-4.1", "gpt-4o"],
   anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  openai: ["gpt-5-codex", "codex-mini-latest", "gpt-4.1", "gpt-4o"],
+  gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"],
+  demo: [],
 };
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
-  openai: MODEL_OPTIONS.openai[0],
-  anthropic: MODEL_OPTIONS.anthropic[0],
+  anthropic: "claude-opus-5",
+  openai: "gpt-5-codex",
+  gemini: "gemini-2.5-flash",
+  demo: "demo",
 };
 
 export interface Connection {
@@ -26,14 +35,15 @@ export interface ApiConfig {
 
 const STORAGE_KEY = "n8nforge_api_config";
 
+function isProvider(value: unknown): value is Provider {
+  return typeof value === "string" && (PROVIDERS as string[]).includes(value);
+}
+
 function emptyConfig(): ApiConfig {
-  return {
-    provider: "openai",
-    connections: {
-      openai: { apiKey: "", model: DEFAULT_MODELS.openai },
-      anthropic: { apiKey: "", model: DEFAULT_MODELS.anthropic },
-    },
-  };
+  const connections = {} as Record<Provider, Connection>;
+  for (const p of PROVIDERS) connections[p] = { apiKey: "", model: DEFAULT_MODELS[p] };
+  // Works out of the box: demo until a real provider is saved
+  return { provider: "demo", connections };
 }
 
 export function loadApiConfig(): ApiConfig {
@@ -42,12 +52,13 @@ export function loadApiConfig(): ApiConfig {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return config;
     const parsed = JSON.parse(raw);
-    // Older versions stored a single OpenAI connection: { apiKey, model }
+    // Oldest version stored a single OpenAI connection: { apiKey, model }
     if (typeof parsed?.apiKey === "string") {
       config.connections.openai = { apiKey: parsed.apiKey, model: parsed.model || DEFAULT_MODELS.openai };
+      config.provider = "openai";
       return config;
     }
-    if (parsed?.provider === "anthropic" || parsed?.provider === "openai") config.provider = parsed.provider;
+    if (isProvider(parsed?.provider)) config.provider = parsed.provider;
     for (const p of PROVIDERS) {
       const c = parsed?.connections?.[p];
       if (c) config.connections[p] = { apiKey: c.apiKey ?? "", model: c.model || DEFAULT_MODELS[p] };

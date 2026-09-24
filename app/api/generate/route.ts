@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { formatAnswers, sanitizeAnswers } from "@/lib/clarify";
+import { demoWorkflow } from "@/lib/demoWorkflows";
 import { errorResponse, generateText, resolveProvider } from "@/lib/llm";
+import { extractJson, validatePrompt } from "@/lib/requestUtils";
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 const N8N_SYSTEM_PROMPT = `You are an expert n8n workflow architect. Your sole job is to convert a natural language description into a valid, importable n8n workflow JSON object.
@@ -240,17 +243,6 @@ Use n8n expressions wrapped in ={{ ... }}:
 
 Now produce the JSON.`;
 
-// ─── Request validation ───────────────────────────────────────────────────────
-function validatePrompt(prompt: unknown): string {
-  if (typeof prompt !== "string" || prompt.trim().length === 0) {
-    throw new Error("Prompt must be a non-empty string.");
-  }
-  if (prompt.length > 1000) {
-    throw new Error("Prompt must be 1000 characters or fewer.");
-  }
-  return prompt.trim();
-}
-
 // ─── n8n JSON validation ─────────────────────────────────────────────────────
 function validateN8nWorkflow(obj: unknown): void {
   if (typeof obj !== "object" || obj === null || Array.isArray(obj)) {
@@ -279,16 +271,6 @@ function validateN8nWorkflow(obj: unknown): void {
   }
 }
 
-// Codex/reasoning models may wrap JSON in fences or add text; take the outermost object.
-function extractJson(text: string): unknown {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    throw new Error("Response does not contain a JSON object.");
-  }
-  return JSON.parse(text.slice(start, end + 1));
-}
-
 // ─── Route Handler ────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   // 1. Parse and validate request body
@@ -304,18 +286,32 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 2. Call the selected provider (OpenAI or Anthropic)
+  const provider = resolveProvider(body.provider);
+  const lang = body.lang === "en" ? "en" : "tr";
+  const answers = sanitizeAnswers(body.answers);
+
+  // Demo mode: no AI call, return a matching sample workflow
+  if (provider === "demo") {
+    await new Promise((r) => setTimeout(r, 900)); // let the loading steps show briefly
+    return NextResponse.json({ workflow: demoWorkflow(userPrompt, lang), demo: true }, { status: 200 });
+  }
+
+  // 2. Call the selected provider
   // Node names follow the UI language so the diagram reads naturally
-  const nameLanguage = body.lang === "tr" ? "Turkish" : "English";
+  const nameLanguage = lang === "tr" ? "Turkish" : "English";
 
   let rawContent: string;
   try {
     rawContent = await generateText({
-      provider: resolveProvider(body.provider),
+      provider,
       apiKey: body.apiKey,
       model: body.model,
       system: N8N_SYSTEM_PROMPT,
-      input: `Generate an n8n workflow for the following requirement. Write the workflow "name" and every node "name" in ${nameLanguage}.\n\n${userPrompt}`,
+      input: `Generate an n8n workflow for the following requirement. Write the workflow "name" and every node "name" in ${nameLanguage}.\n\n${userPrompt}${
+        answers.length
+          ? `\n\nThe user answered these clarifying questions. Build the workflow so it fully covers every answer:\n${formatAnswers(answers)}`
+          : ""
+      }`,
     });
 
     if (!rawContent) {
