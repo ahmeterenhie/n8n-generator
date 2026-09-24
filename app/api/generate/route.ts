@@ -1,16 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-
-// ─── OpenAI client ────────────────────────────────────────────────────────────
-// Created lazily so a missing key yields a clear JSON error instead of a crash.
-let openai: OpenAI | null = null;
-
-function getOpenAI(): OpenAI | null {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) return null;
-  openai ??= new OpenAI({ apiKey });
-  return openai;
-}
+import { createClient, missingKeyResponse, openAIErrorResponse, resolveModel } from "@/lib/openaiServer";
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 const N8N_SYSTEM_PROMPT = `You are an expert n8n workflow architect. Your sole job is to convert a natural language description into a valid, importable n8n workflow JSON object.
@@ -290,67 +279,58 @@ function validateN8nWorkflow(obj: unknown): void {
   }
 }
 
+// Codex/reasoning models may wrap JSON in fences or add text; take the outermost object.
+function extractJson(text: string): unknown {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    throw new Error("Response does not contain a JSON object.");
+  }
+  return JSON.parse(text.slice(start, end + 1));
+}
+
 // ─── Route Handler ────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   // 1. Parse and validate request body
   let userPrompt: string;
+  let body: Record<string, unknown>;
   try {
-    const body = await req.json();
+    body = await req.json();
     userPrompt = validatePrompt(body?.prompt);
   } catch (err: unknown) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Invalid request body." },
+      { code: "INVALID_PROMPT", error: err instanceof Error ? err.message : "Invalid request body." },
       { status: 400 }
     );
   }
 
-  // 2. Call OpenAI
-  const client = getOpenAI();
-  if (!client) {
-    return NextResponse.json(
-      {
-        error:
-          "OPENAI_API_KEY is not configured on the server. Add it to .env.local and restart the server.",
-      },
-      { status: 500 }
-    );
-  }
+  // 2. Call OpenAI (Responses API: supports Codex models as well as GPT models)
+  const client = createClient(body.apiKey);
+  if (!client) return missingKeyResponse();
 
   let rawContent: string;
   try {
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o",
-      response_format: { type: "json_object" },
-      temperature: 0.2, // Low temperature = more deterministic, schema-faithful output
-      max_tokens: 4096,
-      messages: [
-        {
-          role: "system",
-          content: N8N_SYSTEM_PROMPT,
-        },
-        {
-          role: "user",
-          content: `Generate an n8n workflow for the following requirement:\n\n${userPrompt}`,
-        },
-      ],
+    const response = await client.responses.create({
+      model: resolveModel(body.model),
+      instructions: N8N_SYSTEM_PROMPT,
+      input: `Generate an n8n workflow for the following requirement:\n\n${userPrompt}`,
+      // Generous budget: reasoning models spend part of it before writing output
+      max_output_tokens: 16000,
     });
 
-    rawContent = completion.choices[0]?.message?.content ?? "";
+    rawContent = response.output_text ?? "";
 
     if (!rawContent) {
       throw new Error("OpenAI returned an empty response.");
     }
   } catch (err: unknown) {
-    console.error("[OpenAI Error]", err);
-    const message =
-      err instanceof Error ? err.message : "Failed to call OpenAI API.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return openAIErrorResponse(err);
   }
 
   // 3. Parse and validate the generated JSON
   let workflow: unknown;
   try {
-    workflow = JSON.parse(rawContent);
+    workflow = extractJson(rawContent);
     validateN8nWorkflow(workflow);
   } catch (err: unknown) {
     console.error("[Validation Error] Raw content:", rawContent);
@@ -358,7 +338,7 @@ export async function POST(req: NextRequest) {
       err instanceof Error
         ? err.message
         : "Generated output is not valid n8n JSON.";
-    return NextResponse.json({ error: `Validation failed: ${message}` }, { status: 422 });
+    return NextResponse.json({ code: "VALIDATION", error: message }, { status: 422 });
   }
 
   // 4. Return the validated workflow
