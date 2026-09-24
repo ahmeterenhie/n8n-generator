@@ -221,7 +221,7 @@ export function WorkflowDiagram({ workflow }: { workflow: Record<string, unknown
                       {ABBR[type] ?? type.slice(0, 2).toUpperCase()}
                     </span>
                     <span className="min-w-0">
-                      <span className="block truncate text-xs font-bold text-[#e8e6e0]">{n.node.name}</span>
+                      <span className="line-clamp-2 break-words text-xs leading-tight font-bold text-[#e8e6e0]">{n.node.name}</span>
                       <span className="block truncate text-[10px] text-[#6b6b7b]">{type}</span>
                     </span>
                   </button>
