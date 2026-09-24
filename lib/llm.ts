@@ -16,6 +16,7 @@ export class LlmError extends Error {
       | "INVALID_KEY"
       | "MODEL_NOT_FOUND"
       | "RATE_LIMIT"
+      | "UNAVAILABLE"
       | "UPSTREAM"
       | "REFUSAL"
       | "TRUNCATED",
@@ -29,6 +30,15 @@ export class LlmError extends Error {
 // Models whose safety classifiers can decline a request; server-side
 // fallbacks re-run a declined request on Anthropic's recommended model.
 const FALLBACK_MODELS = new Set(["claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"]);
+
+// Gemini's SDK does not retry unless asked. Retry only temporary server
+// errors ("model is overloaded"); quota errors (429) would just fail again.
+function geminiClient(apiKey: string) {
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: { retryOptions: { attempts: 4, initialDelay: 2, maxDelay: 10, httpStatusCodes: [500, 502, 503, 504] } },
+  });
+}
 
 const ENV: Record<ModelProvider, { key?: string; model?: string }> = {
   anthropic: { key: process.env.ANTHROPIC_API_KEY, model: process.env.ANTHROPIC_MODEL },
@@ -73,6 +83,11 @@ function mapError(err: unknown): LlmError {
     }
     if (err.status === 404) return new LlmError("MODEL_NOT_FOUND", message, 404);
     if (err.status === 429) return new LlmError("RATE_LIMIT", message, 429);
+  }
+  // Provider temporarily down or overloaded (Anthropic uses 529); SDKs have already retried
+  const status = (err as { status?: unknown })?.status;
+  if (typeof status === "number" && (status >= 500 || status === 529)) {
+    return new LlmError("UNAVAILABLE", message, 503);
   }
   return new LlmError("UPSTREAM", message, 502);
 }
@@ -120,7 +135,7 @@ export async function generateText(opts: {
     }
 
     if (opts.provider === "gemini") {
-      const client = new GoogleGenAI({ apiKey });
+      const client = geminiClient(apiKey);
       const response = await client.models.generateContent({
         model,
         contents: opts.input,
@@ -170,7 +185,7 @@ export async function testConnection(opts: {
       return (await new Anthropic({ apiKey }).models.retrieve(model)).id;
     }
     if (opts.provider === "gemini") {
-      const info = await new GoogleGenAI({ apiKey }).models.get({ model });
+      const info = await geminiClient(apiKey).models.get({ model });
       return info.name?.replace(/^models\//, "") ?? model;
     }
     return (await new OpenAI({ apiKey }).models.retrieve(model)).id;
