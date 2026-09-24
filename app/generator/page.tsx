@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Shell } from "@/components/Shell";
+import { WorkflowDiagram } from "@/components/WorkflowDiagram";
 import { loadApiConfig, type ApiConfig } from "@/lib/apiConfig";
 import { translateError, useI18n } from "@/lib/i18n";
 
@@ -15,6 +16,7 @@ export default function Generator() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [config, setConfig] = useState<ApiConfig | null>(null);
+  const [view, setView] = useState<"diagram" | "json">("diagram");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // localStorage is only available after mount
@@ -67,15 +69,17 @@ export default function Generator() {
     URL.revokeObjectURL(url);
   }, [result]);
 
+  const workflow = useMemo(() => (result ? (JSON.parse(result) as Record<string, unknown>) : null), [result]);
+
   const stats = useMemo(() => {
-    if (!result) return null;
-    const parsed = JSON.parse(result);
+    if (!result || !workflow) return null;
+    const parsed = workflow as { nodes?: unknown[]; connections?: object };
     return {
       nodes: parsed?.nodes?.length ?? 0,
       connections: Object.keys(parsed?.connections ?? {}).length,
       bytes: new Blob([result]).size,
     };
-  }, [result]);
+  }, [result, workflow]);
 
   const handleExampleClick = (example: string) => {
     setPrompt(example);
@@ -212,14 +216,31 @@ export default function Generator() {
         )}
 
         {/* Result */}
-        {result && stats && !loading && (
+        {result && workflow && stats && !loading && (
           <section>
             <div className="border border-[#1e1e2e] bg-[#0d0d17] rounded-sm overflow-hidden">
               {/* Result header */}
-              <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#28c840] animate-pulse" />
-                  <span className="text-[#28c840] text-xs tracking-widest">{g.resultLabel}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
+                <div className="flex items-center gap-3">
+                  <span className="hidden sm:flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-[#28c840] animate-pulse" />
+                    <span className="text-[#28c840] text-xs tracking-widest">{g.resultLabel}</span>
+                  </span>
+                  <div className="flex border border-[#1e1e2e] rounded-sm overflow-hidden" role="tablist">
+                    {(["diagram", "json"] as const).map((v) => (
+                      <button
+                        key={v}
+                        role="tab"
+                        aria-selected={view === v}
+                        onClick={() => setView(v)}
+                        className={`px-3 py-1 text-[11px] font-bold tracking-widest transition-colors ${
+                          view === v ? "bg-[#ff6b35]/15 text-[#ff6b35]" : "text-[#6b6b7b] hover:text-[#e8e6e0]"
+                        }`}
+                      >
+                        {v === "diagram" ? g.viewDiagram : g.viewJson}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -237,10 +258,13 @@ export default function Generator() {
                 </div>
               </div>
 
-              {/* JSON display */}
-              <pre className="overflow-auto max-h-[480px] px-5 py-4 text-xs text-[#a8a59e] leading-relaxed scrollbar-thin">
-                <code>{result}</code>
-              </pre>
+              {view === "diagram" ? (
+                <WorkflowDiagram workflow={workflow} />
+              ) : (
+                <pre className="overflow-auto max-h-[480px] px-5 py-4 text-xs text-[#a8a59e] leading-relaxed scrollbar-thin">
+                  <code>{result}</code>
+                </pre>
+              )}
 
               {/* Stats footer */}
               <div className="flex items-center gap-4 px-4 py-2.5 border-t border-[#1e1e2e] bg-[#0a0a12]">
