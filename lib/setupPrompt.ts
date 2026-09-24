@@ -1,5 +1,6 @@
 import type { ClarifyAnswer } from "@/lib/clarify";
 import type { Lang } from "@/lib/dictionaries";
+import type { ValidationIssue } from "@/lib/n8n/validate";
 import { shortType, type WfNode } from "@/lib/workflowLayout";
 
 // Builds a ready-to-paste prompt: the user uploads the workflow JSON to any
@@ -29,11 +30,13 @@ export function buildSetupPrompt(opts: {
   request: string;
   answers: ClarifyAnswer[];
   lang: Lang;
+  openIssues?: ValidationIssue[];
 }): string {
   const nodes = (Array.isArray(opts.workflow.nodes) ? opts.workflow.nodes : []) as WfNode[];
   const name = typeof opts.workflow.name === "string" ? opts.workflow.name : "n8n workflow";
   const nodeList = nodes.map((n) => `- ${n.name} (${shortType(n.type)})`).join("\n");
   const placeholders = Array.from(findPlaceholders(nodes), ([ph, users]) => `- ${ph} → ${Array.from(users).join(", ")}`);
+  const issues = (opts.openIssues ?? []).map((i) => `- ${i.node ? `${i.node}: ` : ""}${i.message}`);
 
   if (opts.lang === "en") {
     return [
@@ -45,6 +48,9 @@ export function buildSetupPrompt(opts: {
       "Nodes in the workflow:",
       nodeList,
       ...(placeholders.length ? ["", "Placeholder values I still need to replace:", ...placeholders] : []),
+      ...(issues.length
+        ? ["", "An automatic check against the n8n node catalog found these unresolved issues; please help me fix them:", ...issues]
+        : []),
       "",
       "Please:",
       "1. Summarise in 3–4 sentences what this workflow does.",
@@ -68,6 +74,9 @@ export function buildSetupPrompt(opts: {
     "İş akışındaki düğümler:",
     nodeList,
     ...(placeholders.length ? ["", "Doldurmam gereken yer tutucu değerler:", ...placeholders] : []),
+    ...(issues.length
+      ? ["", "n8n düğüm kataloğuna göre yapılan otomatik kontrol şu sorunları çözemedi; bunları düzeltmeme de yardım et:", ...issues]
+      : []),
     "",
     "Lütfen:",
     "1. Bu iş akışının ne yaptığını 3–4 cümleyle özetle.",

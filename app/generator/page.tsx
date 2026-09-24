@@ -5,6 +5,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Shell } from "@/components/Shell";
 import { QuestionsPanel } from "@/components/QuestionsPanel";
 import { SetupGuide } from "@/components/SetupGuide";
+import { ValidationPanel, type ValidationSummary } from "@/components/ValidationPanel";
 import { WorkflowDiagram } from "@/components/WorkflowDiagram";
 import { activeConnection, loadApiConfig, needsKey, type Connection, type Provider } from "@/lib/apiConfig";
 import type { ClarifyAnswer, ClarifyQuestion } from "@/lib/clarify";
@@ -16,6 +17,7 @@ export default function Generator() {
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState<string | null>(null);
   const [isDemo, setIsDemo] = useState(false);
+  const [validation, setValidation] = useState<ValidationSummary | null>(null);
   // Which request is running: fetching questions or generating the workflow
   const [busy, setBusy] = useState<"asking" | "generating" | null>(null);
   const loading = busy !== null;
@@ -86,6 +88,7 @@ export default function Generator() {
       const data = await postJson("/api/generate", { answers: given });
       setResult(JSON.stringify(data.workflow, null, 2));
       setIsDemo(data.demo === true);
+      setValidation(data.validation ?? null);
       setGeneratedFrom({ request: prompt.trim(), answers: given });
       setQuestions(null);
     } catch (err: unknown) {
@@ -359,6 +362,8 @@ export default function Generator() {
                 </pre>
               )}
 
+              {validation && <ValidationPanel validation={validation} />}
+
               {/* Stats footer */}
               <div className="flex items-center gap-4 px-4 py-2.5 border-t border-[#1e1e2e] bg-[#0a0a12]">
                 <Stat label={g.nodes} value={stats.nodes.toString()} />
@@ -368,7 +373,12 @@ export default function Generator() {
             </div>
 
             {generatedFrom && (
-              <SetupGuide workflow={workflow} request={generatedFrom.request} answers={generatedFrom.answers} />
+              <SetupGuide
+                workflow={workflow}
+                request={generatedFrom.request}
+                answers={generatedFrom.answers}
+                openIssues={validation?.errors ?? []}
+              />
             )}
           </section>
         )}
