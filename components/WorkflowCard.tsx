@@ -1,13 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { ExecutionsPanel } from "@/components/ExecutionsPanel";
 import { ProgressPanel, Spinner } from "@/components/ProgressPanel";
 import { ValidationPanel } from "@/components/ValidationPanel";
 import { WorkflowDiagram } from "@/components/WorkflowDiagram";
 import { ApiRequestError, postStream } from "@/lib/apiClient";
 import type { Connection, Provider } from "@/lib/apiConfig";
 import { translateError, useI18n } from "@/lib/i18n";
+import type { N8nSettings } from "@/lib/n8nConfig";
 import type { BuiltWorkflow, Progress } from "@/lib/pipeline";
+import type { ProjectWorkflow } from "@/lib/projectTypes";
 
 export function downloadJson(name: string, data: unknown) {
   const slug = name.toLocaleLowerCase("tr").replace(/[^a-z0-9ğüşöçı]+/gi, "-").replace(/^-|-$/g, "") || "workflow";
@@ -19,17 +22,22 @@ export function downloadJson(name: string, data: unknown) {
   URL.revokeObjectURL(url);
 }
 
-/** One generated workflow: diagram or JSON, check result, download and change requests. */
+/** One generated workflow: diagram or JSON, check result, download, change requests and n8n runs. */
 export function WorkflowCard({
   built,
   isDemo,
   conn,
+  n8n,
   onReplace,
+  onPushAll,
 }: {
-  built: BuiltWorkflow;
+  built: ProjectWorkflow;
   isDemo: boolean;
   conn: (Connection & { provider: Provider }) | null;
-  onReplace: (updated: BuiltWorkflow) => void;
+  n8n: N8nSettings | null;
+  onReplace: (updated: ProjectWorkflow) => void;
+  /** Sends the system to n8n, with this workflow replaced by the given version */
+  onPushAll?: (override: ProjectWorkflow) => Promise<boolean>;
 }) {
   const { t, lang } = useI18n();
   const g = t.generator;
@@ -62,8 +70,8 @@ export function WorkflowCard({
     }
   };
 
-  const handleRefine = async () => {
-    if (!instruction.trim() || refining) return;
+  /** Applies a change request; returns the updated workflow, or null on failure. */
+  const runRefine = async (text: string): Promise<ProjectWorkflow | null> => {
     setRefining(true);
     setError(null);
     setRefined(false);
@@ -71,17 +79,38 @@ export function WorkflowCard({
     try {
       const data = await postStream<{ workflow: BuiltWorkflow["workflow"]; validation: BuiltWorkflow["validation"] }>(
         "/api/refine",
-        { workflow: built.workflow, instruction: instruction.trim(), provider: conn?.provider, apiKey: conn?.apiKey, model: conn?.model, lang },
+        { workflow: built.workflow, instruction: text, provider: conn?.provider, apiKey: conn?.apiKey, model: conn?.model, lang },
         (e) => setProgress((prev) => [...prev, e as unknown as Progress])
       );
-      onReplace({ ...built, workflow: data.workflow, validation: data.validation });
-      setInstruction("");
-      setRefined(true);
+      const updated: ProjectWorkflow = {
+        ...built,
+        workflow: data.workflow,
+        validation: data.validation,
+        ...(built.remote && { remote: { ...built.remote, outdated: true } }),
+      };
+      onReplace(updated);
+      return updated;
     } catch (err) {
       setError(err instanceof ApiRequestError ? translateError(t, err.data, err.status) : t.errors.SERVER);
+      return null;
     } finally {
       setRefining(false);
     }
+  };
+
+  const handleRefine = async () => {
+    if (!instruction.trim() || refining) return;
+    if (await runRefine(instruction.trim())) {
+      setInstruction("");
+      setRefined(true);
+    }
+  };
+
+  // From a failed n8n run: fix, then update n8n so the run can be retried
+  const fixFromRun = async (text: string): Promise<boolean> => {
+    const updated = await runRefine(text);
+    if (!updated) return false;
+    return onPushAll ? onPushAll(updated) : true;
   };
 
   return (
@@ -108,6 +137,16 @@ export function WorkflowCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {built.remote && (
+              <a
+                href={built.remote.url}
+                target="_blank"
+                rel="noreferrer"
+                className="px-3 py-1.5 text-xs text-[#28c840] hover:text-[#e8e6e0] border border-[#28c840]/40 hover:border-[#3a3a4a] rounded-sm transition-colors"
+              >
+                {t.n8n.open}
+              </a>
+            )}
             <button
               onClick={handleCopy}
               className="px-3 py-1.5 text-xs text-[#6b6b7b] hover:text-[#e8e6e0] border border-[#1e1e2e] hover:border-[#3a3a4a] rounded-sm transition-colors"
@@ -125,6 +164,9 @@ export function WorkflowCard({
 
         {isDemo && (
           <p className="px-4 py-2 border-b border-[#1e1e2e] text-[11px] text-[#febc2e] bg-[#febc2e]/5">{g.demoNotice}</p>
+        )}
+        {built.remote?.outdated && (
+          <p className="px-4 py-2 border-b border-[#1e1e2e] text-[11px] text-[#febc2e] bg-[#febc2e]/5">⚠ {t.n8n.outdated}</p>
         )}
 
         {view === "diagram" ? (
@@ -182,6 +224,8 @@ export function WorkflowCard({
           <ProgressPanel events={progress} />
         </div>
       )}
+
+      {built.remote && n8n && <ExecutionsPanel n8n={n8n} workflowId={built.remote.id} onFix={fixFromRun} />}
     </div>
   );
 }

@@ -69,6 +69,9 @@ function Header({ variant }: { variant: "public" | "app" }) {
             <NavLink href="/generator" active={pathname === "/generator"}>
               {t.nav.generator}
             </NavLink>
+            <NavLink href="/projects" active={pathname === "/projects"}>
+              {t.nav.projects}
+            </NavLink>
             <NavLink href="/settings" active={pathname === "/settings"}>
               {t.nav.settings}
             </NavLink>

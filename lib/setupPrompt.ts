@@ -49,6 +49,7 @@ const TEXT = {
     linking: [
       "Bu sistem birden fazla iş akışından oluşuyor. Önce alt iş akışlarını ve hata iş akışını, en son ana iş akışlarını içe aktarmamı söyle.",
       "Ana iş akışlarındaki \"Execute Sub-workflow\" düğümlerinde doğru alt iş akışını seçmemi ve alt iş akışlarını nasıl test edeceğimi göster.",
+      "n8n 2.x'te bir iş akışını yayınlamadan (Publish) önce çağırdığı alt iş akışlarının yayınlanmış olması gerektiğini hatırlat ve yayınlama sırasını söyle.",
       "Hata iş akışı varsa, her ana iş akışının Settings → Error Workflow ayarında onu nasıl seçeceğimi anlat.",
     ],
     please: "Lütfen:",
@@ -78,6 +79,7 @@ const TEXT = {
     linking: [
       "This system has several workflows. Tell me to import the sub-workflows and the error workflow first and the main workflows last.",
       'Show me how to select the right sub-workflow in each "Execute Sub-workflow" node and how to test the sub-workflows.',
+      "Remind me that in n8n 2.x a workflow can only be published after the sub-workflows it calls are published, and tell me the order.",
       "If there is an error workflow, explain how to select it under Settings → Error Workflow in each main workflow.",
     ],
     please: "Please:",

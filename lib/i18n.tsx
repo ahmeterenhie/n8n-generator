@@ -14,7 +14,7 @@ export function translateError(t: Dict, data: { code?: string; error?: string },
   if (code && code in t.errors) {
     const base = t.errors[code];
     // These codes are prefixes: append the upstream detail
-    return code === "UPSTREAM" || code === "VALIDATION" ? `${base} ${data.error ?? ""}`.trim() : base;
+    return code === "UPSTREAM" || code === "VALIDATION" || code === "N8N_ERROR" ? `${base} ${data.error ?? ""}`.trim() : base;
   }
   return data.error || `${t.errors.SERVER}: ${status}`;
 }

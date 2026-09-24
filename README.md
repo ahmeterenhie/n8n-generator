@@ -11,7 +11,8 @@ Convert natural language descriptions (Turkish or English) into fully importable
 | `/`          | Public    | Landing page: what the app does and how it works              |
 | `/login`     | Public    | Sign-in screen                                                |
 | `/generator` | Signed in | Describe → answer questions → review the plan → generate → refine; or upload an existing workflow |
-| `/settings`  | Signed in | Pick Claude, OpenAI, Gemini or Demo; add the key, pick a model, test it |
+| `/projects`  | Signed in | Saved projects: open to continue, or delete                   |
+| `/settings`  | Signed in | AI provider (Claude, OpenAI, Gemini or Demo) and the n8n connection |
 
 The interface is in **Turkish** by default; every page has a **TR / EN** switch, remembered in a cookie. Generated node names follow the selected language.
 
@@ -28,6 +29,8 @@ n8n-generator/
 │   │   ├── generate/route.ts         # POST: approved plan → validated workflows (streamed)
 │   │   ├── refine/route.ts           # POST: change a workflow by instruction (streamed)
 │   │   ├── validate/route.ts         # POST: check an uploaded workflow (no AI)
+│   │   ├── n8n/[action]/route.ts     # POST: test / push / executions / retry (proxy to n8n)
+│   │   └── projects/                 # GET/POST list+save, GET/DELETE one project
 │   │   ├── test-connection/route.ts  # POST: checks the API key can access the chosen model
 │   │   ├── login/route.ts            # POST: checks credentials, sets session cookie
 │   │   └── logout/route.ts           # POST: clears session cookie
@@ -55,6 +58,8 @@ n8n-generator/
 │   │   ├── catalog.ts                # Official node catalog: search, overviews, specs
 │   │   ├── validate.ts               # Checks workflows against the catalog
 │   │   └── prompts.ts                # Plan / generate / repair instructions
+│   ├── n8n/remote.ts                 # n8n Public API: push + linking, executions, retry
+│   ├── projects.ts                   # Project history (JSON files on this machine)
 │   ├── pipeline.ts                   # Plan → generate → validate → repair; refine
 │   ├── plan.ts                       # Plan structure and checks
 │   ├── stream.ts / apiClient.ts      # Streamed progress (server / browser)
@@ -102,6 +107,7 @@ All optional. Copy `.env.example` to `.env.local` to set them.
 | `GEMINI_MODEL`   | `gemini-2.5-flash` | Fallback Gemini model                                            |
 | `OPENAI_API_KEY` | —                | Fallback OpenAI key used when the browser has not saved one        |
 | `OPENAI_MODEL`   | `gpt-5-codex`    | Fallback OpenAI model                                              |
+| `PROJECTS_DIR`   | `.data/projects` | Where project history is saved                                     |
 
 ---
 
@@ -123,7 +129,9 @@ All optional. Copy `.env.example` to `.env.local` to set them.
    "Generate directly" skips questions and review (plan and build in one go).
 5. **Result** — one tab per workflow with a node diagram (JSON on a second tab), the check result (clean, fields left for the user, or unresolved issues), and download buttons (one file per workflow, or all at once).
 6. **Refine** — `/api/refine` changes any workflow from a text instruction and checks and repairs it again. An existing workflow can also be uploaded (`/api/validate` checks it without an AI call) and then refined.
-7. **Setup prompt** — built from all workflows (nodes, `YOUR_…` placeholders, request and answers, unresolved issues, and for several workflows the import order and how to link sub-workflows and the error workflow). The user uploads the JSON files to any AI assistant with this prompt and gets step-by-step setup help.
+7. **n8n** — with an n8n connection (address + API key, stored in the browser), **Send to n8n** creates the workflows through n8n's Public API, error and sub-workflows first. It then links them: Execute Sub-workflow nodes get the real sub-workflow ids, and main/sub workflows get the error workflow in their settings. Later sends update the same workflows; ones that were already published are published again, because n8n 2.x runs the published version. Recent runs of each workflow are listed with the failing node and message. **Fix the error** turns a failed run into a change request, applies it, updates n8n, and offers **Retry**, which reruns that execution with the fixed version. n8n's API cannot start a workflow from scratch, so the first run happens in n8n.
+8. **History** — every result is saved as a project (`.data/projects/`, or `PROJECTS_DIR`) after each build, change or send, and can be reopened from **Projects**. API keys are never saved.
+9. **Setup prompt** — built from all workflows (nodes, `YOUR_…` placeholders, request and answers, unresolved issues, and for several workflows the import order and how to link sub-workflows and the error workflow). The user uploads the JSON files to any AI assistant with this prompt and gets step-by-step setup help.
 
 Providers: the **Anthropic Messages API** (streamed; `fallbacks: "default"` on Claude Opus 5 re-runs a declined request on Anthropic's recommended model), the **OpenAI Responses API** (serves Codex and GPT models), or the **Gemini API** (retries temporary 5xx errors).
 

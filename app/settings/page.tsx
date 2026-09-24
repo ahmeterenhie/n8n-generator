@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { N8nSettingsCard } from "@/components/N8nSettingsCard";
 import { Shell } from "@/components/Shell";
 import {
   DEFAULT_MODELS,
@@ -288,6 +289,8 @@ export default function Settings() {
             )}
           </div>
         </div>
+
+        <N8nSettingsCard />
       </div>
     </Shell>
   );
