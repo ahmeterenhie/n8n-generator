@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { PlanPanel } from "@/components/PlanPanel";
 import { ProgressPanel, Spinner } from "@/components/ProgressPanel";
 import { ProjectResult } from "@/components/ProjectResult";
@@ -11,8 +12,10 @@ import { ApiRequestError, postJson, postStream } from "@/lib/apiClient";
 import { activeConnection, loadApiConfig, needsKey, type Connection, type Provider } from "@/lib/apiConfig";
 import { MAX_CLARIFY_ROUNDS, type ClarifyAnswer, type ClarifyQuestion } from "@/lib/clarify";
 import { translateError, useI18n } from "@/lib/i18n";
+import { loadN8n, type N8nSettings } from "@/lib/n8nConfig";
 import type { BuiltWorkflow, Progress } from "@/lib/pipeline";
 import type { Plan } from "@/lib/plan";
+import type { ProjectWorkflow } from "@/lib/projectTypes";
 
 // Flow: describe → questions (rounds) → plan (review, edit, approve) → build (streamed) → result.
 // "Generate directly" skips questions and plan review; an uploaded JSON goes straight to the result.
@@ -21,13 +24,23 @@ type Stage = "describe" | "questions" | "plan" | "building" | "result";
 type Busy = null | "asking" | "planning" | "revising" | "building" | "uploading";
 
 interface ProjectState {
-  workflows: BuiltWorkflow[];
+  workflows: ProjectWorkflow[];
   demo: boolean;
   request: string;
   answers: ClarifyAnswer[];
+  plan?: Plan | null;
 }
 
-export default function Generator() {
+// useSearchParams needs a Suspense boundary
+export default function GeneratorPage() {
+  return (
+    <Suspense>
+      <Generator />
+    </Suspense>
+  );
+}
+
+function Generator() {
   const { t, lang } = useI18n();
   const g = t.generator;
   const [conn, setConn] = useState<(Connection & { provider: Provider }) | null>(null);
@@ -44,12 +57,48 @@ export default function Generator() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [progress, setProgress] = useState<Progress[]>([]);
   const [project, setProject] = useState<ProjectState | null>(null);
+  // Saved project (history) the current result belongs to
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [n8n, setN8n] = useState<N8nSettings | null>(null);
+  const searchParams = useSearchParams();
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // localStorage is only available after mount
-  useEffect(() => setConn(activeConnection(loadApiConfig())), []);
+  useEffect(() => {
+    setConn(activeConnection(loadApiConfig()));
+    setN8n(loadN8n());
+  }, []);
+
+  // Open a saved project: /generator?project=<id>
+  const openId = searchParams.get("project");
+  useEffect(() => {
+    if (!openId) return;
+    fetch(`/api/projects/${encodeURIComponent(openId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.project) return;
+        const p = data.project;
+        setPrompt(p.request ?? "");
+        setProject({ workflows: p.workflows, demo: p.demo === true, request: p.request, answers: p.answers ?? [], plan: p.plan });
+        setProjectId(p.id);
+        setStage("result");
+      })
+      .catch(() => {});
+  }, [openId]);
+
+  // Keep the history copy up to date after every change (build, refine, push, upload)
+  useEffect(() => {
+    if (!project) return;
+    const timer = setTimeout(() => {
+      postJson<{ id: string }>("/api/projects", { id: projectId ?? undefined, ...project })
+        .then((data) => setProjectId(data.id))
+        .catch(() => {}); // history is a convenience; the result stays on screen
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- save when the project changes, not when the id is set
+  }, [project]);
 
   const connBody = { provider: conn?.provider, apiKey: conn?.apiKey, model: conn?.model, lang };
 
@@ -137,7 +186,14 @@ export default function Generator() {
         { prompt: prompt.trim(), answers: asked, ...(approved && { plan: approved }), ...connBody },
         (e) => setProgress((prev) => [...prev, e as unknown as Progress])
       );
-      setProject({ workflows: data.workflows, demo: data.demo === true, request: prompt.trim(), answers: asked.filter((a) => a.answer) });
+      setProjectId(null); // a new build is a new project
+      setProject({
+        workflows: data.workflows,
+        demo: data.demo === true,
+        request: prompt.trim(),
+        answers: asked.filter((a) => a.answer),
+        plan: approved,
+      });
       setStage("result");
     } catch (err) {
       fail(err);
@@ -164,6 +220,7 @@ export default function Generator() {
         { workflow }
       );
       const name = typeof data.workflow.name === "string" ? data.workflow.name : file.name.replace(/\.json$/i, "");
+      setProjectId(null);
       setProject({
         workflows: [{ key: "uploaded", name, role: "main", workflow: data.workflow, validation: data.validation }],
         demo: false,
@@ -189,6 +246,7 @@ export default function Generator() {
   const reset = () => {
     setStage("describe");
     setProject(null);
+    setProjectId(null);
     setPlan(null);
     setHistory([]);
     setPrompt("");
@@ -408,9 +466,11 @@ export default function Generator() {
               request={project.request}
               answers={project.answers}
               conn={conn}
+              n8n={n8n}
               onReplace={(index, updated) =>
                 setProject((p) => (p ? { ...p, workflows: p.workflows.map((w, i) => (i === index ? updated : w)) } : p))
               }
+              onReplaceAll={(updated) => setProject((p) => (p ? { ...p, workflows: updated } : p))}
             />
           </>
         )}
