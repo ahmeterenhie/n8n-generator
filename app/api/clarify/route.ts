@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { clarifySystemPrompt, demoQuestions, parseQuestions } from "@/lib/clarify";
+import {
+  MAX_CLARIFY_ROUNDS,
+  clarifyInput,
+  clarifySystemPrompt,
+  demoQuestions,
+  parseClarify,
+  sanitizeHistory,
+} from "@/lib/clarify";
 import { errorResponse, generateText, resolveProvider } from "@/lib/llm";
 import { extractJson, validatePrompt } from "@/lib/requestUtils";
 
-// POST: request description → a few clarifying questions to answer before generating.
+// POST: request + earlier Q&A → the next round of clarifying questions, or done.
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
   let userPrompt: string;
@@ -19,10 +26,14 @@ export async function POST(req: NextRequest) {
 
   const provider = resolveProvider(body.provider);
   const lang = body.lang === "en" ? "en" : "tr";
+  const round = Math.max(1, Math.floor(Number(body.round) || 1));
+  const history = sanitizeHistory(body.history);
+
+  if (round > MAX_CLARIFY_ROUNDS) return NextResponse.json({ done: true, questions: [], round });
 
   if (provider === "demo") {
     await new Promise((r) => setTimeout(r, 600));
-    return NextResponse.json({ questions: demoQuestions(lang) });
+    return NextResponse.json({ ...demoQuestions(lang, round), round });
   }
 
   let rawContent: string;
@@ -32,14 +43,14 @@ export async function POST(req: NextRequest) {
       apiKey: body.apiKey,
       model: body.model,
       system: clarifySystemPrompt(lang),
-      input: userPrompt,
+      input: clarifyInput(userPrompt, history, round),
     });
   } catch (err: unknown) {
     return errorResponse(err);
   }
 
   try {
-    return NextResponse.json({ questions: parseQuestions(extractJson(rawContent)) });
+    return NextResponse.json({ ...parseClarify(extractJson(rawContent)), round });
   } catch (err: unknown) {
     console.error("[Clarify Error] Raw content:", rawContent);
     return NextResponse.json(

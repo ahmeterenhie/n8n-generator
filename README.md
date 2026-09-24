@@ -10,7 +10,7 @@ Convert natural language descriptions (Turkish or English) into fully importable
 |--------------|-----------|---------------------------------------------------------------|
 | `/`          | Public    | Landing page: what the app does and how it works              |
 | `/login`     | Public    | Sign-in screen                                                |
-| `/generator` | Signed in | Describe a workflow, answer a few questions, generate, get a setup prompt |
+| `/generator` | Signed in | Describe → answer questions → review the plan → generate → refine; or upload an existing workflow |
 | `/settings`  | Signed in | Pick Claude, OpenAI, Gemini or Demo; add the key, pick a model, test it |
 
 The interface is in **Turkish** by default; every page has a **TR / EN** switch, remembered in a cookie. Generated node names follow the selected language.
@@ -23,8 +23,11 @@ The interface is in **Turkish** by default; every page has a **TR / EN** switch,
 n8n-generator/
 ├── app/
 │   ├── api/
-│   │   ├── clarify/route.ts          # POST: prompt → clarifying questions
-│   │   ├── generate/route.ts         # POST: prompt (+ answers) → n8n workflow JSON
+│   │   ├── clarify/route.ts          # POST: next round of clarifying questions (or done)
+│   │   ├── plan/route.ts             # POST: plan for review; revise with feedback
+│   │   ├── generate/route.ts         # POST: approved plan → validated workflows (streamed)
+│   │   ├── refine/route.ts           # POST: change a workflow by instruction (streamed)
+│   │   ├── validate/route.ts         # POST: check an uploaded workflow (no AI)
 │   │   ├── test-connection/route.ts  # POST: checks the API key can access the chosen model
 │   │   ├── login/route.ts            # POST: checks credentials, sets session cookie
 │   │   └── logout/route.ts           # POST: clears session cookie
@@ -36,7 +39,11 @@ n8n-generator/
 │   └── globals.css
 ├── components/
 │   ├── Shell.tsx                     # Shared header, navigation, language switch
-│   ├── QuestionsPanel.tsx            # Clarifying questions form
+│   ├── QuestionsPanel.tsx            # Clarifying questions (rounds)
+│   ├── PlanPanel.tsx                 # Plan review and editing
+│   ├── ProgressPanel.tsx             # Live generation steps
+│   ├── ProjectResult.tsx             # Tabs for all workflows of a system
+│   ├── WorkflowCard.tsx              # One workflow: diagram, check, download, refine
 │   ├── SetupGuide.tsx                # Setup prompt with copy / download
 │   └── WorkflowDiagram.tsx           # Visual node diagram of a workflow
 ├── lib/
@@ -48,7 +55,9 @@ n8n-generator/
 │   │   ├── catalog.ts                # Official node catalog: search, overviews, specs
 │   │   ├── validate.ts               # Checks workflows against the catalog
 │   │   └── prompts.ts                # Plan / generate / repair instructions
-│   ├── pipeline.ts                   # Plan → generate → validate → repair
+│   ├── pipeline.ts                   # Plan → generate → validate → repair; refine
+│   ├── plan.ts                       # Plan structure and checks
+│   ├── stream.ts / apiClient.ts      # Streamed progress (server / browser)
 │   ├── llm.ts                        # Claude, OpenAI and Gemini calls, error mapping
 │   ├── clarify.ts                    # Clarifying-question prompt, parsing, demo questions
 │   ├── demoWorkflows.ts              # Sample workflows for demo mode
@@ -98,19 +107,25 @@ All optional. Copy `.env.example` to `.env.local` to set them.
 
 ## How It Works
 
-1. On the **API** page the user picks a provider (Claude, OpenAI, Gemini or Demo) and saves a key and model for it. Keys are stored only in that browser (`localStorage`); each provider keeps its own. New users start in demo mode.
-2. **Continue** sends the description to `/api/clarify`, which asks the model for 3–6 short questions (trigger and timing, data sources, destinations, edge cases, error handling), each with suggested answers. The user answers what they can, or skips the questions.
-3. **Generate** sends `{ prompt, answers, provider, apiKey, model, lang }` to `/api/generate`. The server uses the key for that one request and never stores it; demo mode returns a matching sample workflow instead of calling a model.
-4. `lib/pipeline.ts` runs the generation in steps against the **official n8n node catalog** (see below):
-   1. **Plan** — the model gets a short overview of candidate nodes (core nodes plus the services the request mentions, found by keyword with Turkish synonyms) and picks node types with their exact resource and operation.
-   2. **Generate** — the model gets the exact spec of each chosen operation (type, `typeVersion`, parameter names, allowed values, n8n's own builder hints) and writes the workflow.
-   3. **Validate** — `lib/n8n/validate.ts` checks the result with n8n's own parameter logic (`n8n-workflow`) plus extra checks: unknown node types, unsupported versions, parameters n8n would silently drop, invalid option values, broken connections, triggers with inputs, Respond-to-Webhook mode.
-   4. **Repair** — errors go back to the model with the matching specs, up to two rounds; a repair is only kept if it does not make things worse.
+1. On the **API** page the user picks a provider (Claude, OpenAI, Gemini or Demo) and saves a key and model for it. Keys are stored only in that browser (`localStorage`); each provider keeps its own. New users start in demo mode. The server uses a key only for the request it came with and never stores it.
+2. **Questions** — `/api/clarify` asks up to 5 questions per round, for up to 3 rounds. Each round sees every earlier question and answer (skipped ones included) and follows up on them; the model says when it has enough. The user can also stop early ("that's enough, make the plan").
+3. **Plan** — `/api/plan` returns a plan the user reviews before anything is built: the workflows, their triggers and ordered steps (each with its n8n node, resource and operation), the accounts to connect, and the assumptions made. The model gets short overviews of candidate nodes (core nodes plus services the request mentions, found by keyword with Turkish synonyms). Large systems can be split into:
+   - several **main** workflows (one per independent trigger),
+   - **sub-workflows** for reusable or self-contained parts (Execute Workflow Trigger, called with Execute Sub-workflow),
+   - an **error workflow** (Error Trigger) for alerts about failures anywhere.
 
-   Providers: the **Anthropic Messages API** (streamed; `fallbacks: "default"` on Claude Opus 5 re-runs a declined request on Anthropic's recommended model), the **OpenAI Responses API** (serves Codex and GPT models), or the **Gemini API** (retries temporary 5xx errors).
-5. The UI shows the check result: a clean pass, fields left for the user (placeholders, pick-from-list fields), or issues that could not be fixed automatically.
-6. The UI draws the workflow as a node diagram (JSON on a second tab) and offers **Copy** and **Download**.
-7. A **setup prompt** is built from the workflow (nodes, `YOUR_…` placeholders, the request and answers). The user uploads the JSON to any AI assistant with this prompt and gets step-by-step setup help: credentials, placeholder values, webhook URLs and testing.
+   The user can rename workflows, edit, delete or add steps (a new step without a node gets one picked during generation), or describe changes for the model to revise the plan.
+4. **Generate** — `/api/generate` builds each planned workflow in turn (`lib/pipeline.ts`) and streams progress (NDJSON, `lib/stream.ts`):
+   1. **Write** with the exact spec of each planned operation from the **official n8n node catalog** (type, `typeVersion`, parameter names, allowed values, n8n's own builder hints), plus the nodes that link workflows together.
+   2. **Validate** with `lib/n8n/validate.ts`: n8n's own parameter logic (`n8n-workflow`) plus unknown node types, unsupported versions, parameters n8n would silently drop, invalid option values, broken connections, triggers with inputs and the Respond-to-Webhook mode.
+   3. **Repair** — errors go back to the model with the matching specs, up to two rounds. A repair is only kept if it does not make things worse.
+
+   "Generate directly" skips questions and review (plan and build in one go).
+5. **Result** — one tab per workflow with a node diagram (JSON on a second tab), the check result (clean, fields left for the user, or unresolved issues), and download buttons (one file per workflow, or all at once).
+6. **Refine** — `/api/refine` changes any workflow from a text instruction and checks and repairs it again. An existing workflow can also be uploaded (`/api/validate` checks it without an AI call) and then refined.
+7. **Setup prompt** — built from all workflows (nodes, `YOUR_…` placeholders, request and answers, unresolved issues, and for several workflows the import order and how to link sub-workflows and the error workflow). The user uploads the JSON files to any AI assistant with this prompt and gets step-by-step setup help.
+
+Providers: the **Anthropic Messages API** (streamed; `fallbacks: "default"` on Claude Opus 5 re-runs a declined request on Anthropic's recommended model), the **OpenAI Responses API** (serves Codex and GPT models), or the **Gemini API** (retries temporary 5xx errors).
 
 Errors come back as `{ code, error }`, so the UI can show them in the selected language.
 

@@ -3,30 +3,44 @@
 import type { ClarifyQuestion } from "@/lib/clarify";
 import { useI18n } from "@/lib/i18n";
 
-/** Clarifying questions shown before generating; each has optional suggested answers. */
+/** One round of clarifying questions; each has optional suggested answers. */
 export function QuestionsPanel({
   questions,
   answers,
+  round,
+  maxRounds,
   onAnswer,
-  onGenerate,
+  onContinue,
+  onEnough,
   onBack,
   busy,
 }: {
   questions: ClarifyQuestion[];
   answers: Record<string, string>;
+  round: number;
+  maxRounds: number;
   onAnswer: (id: string, value: string) => void;
-  onGenerate: () => void;
+  /** Send the answers and let the model decide whether to ask more */
+  onContinue: () => void;
+  /** Send the answers and go straight to the plan */
+  onEnough: () => void;
   onBack: () => void;
   busy: boolean;
 }) {
   const { t } = useI18n();
   const g = t.generator;
   const answeredCount = questions.filter((q) => answers[q.id]?.trim()).length;
+  const lastRound = round >= maxRounds;
 
   return (
     <section className="mb-8 border border-[#ff6b35]/40 bg-[#0d0d17] rounded-sm overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
-        <span className="text-[#ff6b35] text-xs tracking-widest uppercase font-bold">{g.questionsTitle}</span>
+        <span className="flex items-center gap-3">
+          <span className="text-[#ff6b35] text-xs tracking-widest uppercase font-bold">{g.questionsTitle}</span>
+          <span className="text-[11px] text-[#6b6b7b] border border-[#1e1e2e] rounded-sm px-1.5 py-0.5">
+            {g.roundLabel.replace("{round}", String(round)).replace("{max}", String(maxRounds))}
+          </span>
+        </span>
         <span className="text-[11px] tabular-nums text-[#6b6b7b]">
           {answeredCount}/{questions.length} {g.answered}
         </span>
@@ -86,14 +100,26 @@ export function QuestionsPanel({
         <button type="button" onClick={onBack} className="text-xs text-[#6b6b7b] hover:text-[#e8e6e0] transition-colors">
           {g.editRequest}
         </button>
-        <button
-          type="button"
-          onClick={onGenerate}
-          disabled={busy}
-          className="flex items-center gap-2 px-5 py-2 bg-[#ff6b35] text-[#0a0a0f] text-xs font-bold tracking-widest uppercase rounded-sm hover:bg-[#ff8555] disabled:opacity-30 disabled:cursor-not-allowed transition-colors active:scale-95"
-        >
-          ▶ {g.generateNow}
-        </button>
+        <div className="flex flex-wrap items-center gap-4 ml-auto">
+          {!lastRound && (
+            <button
+              type="button"
+              onClick={onEnough}
+              disabled={busy}
+              className="text-xs text-[#6b6b7b] hover:text-[#e8e6e0] underline-offset-4 hover:underline disabled:opacity-30 transition-colors"
+            >
+              {g.enough}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={lastRound ? onEnough : onContinue}
+            disabled={busy}
+            className="flex items-center gap-2 px-5 py-2 bg-[#ff6b35] text-[#0a0a0f] text-xs font-bold tracking-widest uppercase rounded-sm hover:bg-[#ff8555] disabled:opacity-30 disabled:cursor-not-allowed transition-colors active:scale-95"
+          >
+            ▶ {g.next}
+          </button>
+        </div>
       </div>
     </section>
   );

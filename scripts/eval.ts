@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClarifyAnswer } from "@/lib/clarify";
 import { BASE_PREFIX } from "@/lib/n8n/catalog";
-import { generateWorkflow } from "@/lib/pipeline";
+import { generateDirect } from "@/lib/pipeline";
 
 interface Case {
   id: string;
@@ -29,6 +29,7 @@ interface CaseResult {
   warnings: number;
   repairRounds: number;
   nodes: number;
+  workflows?: number;
   missingExpected: string[];
   seconds: number;
   failure?: string;
@@ -48,7 +49,8 @@ const cases = (JSON.parse(readFileSync(join(process.cwd(), "scripts", "eval-case
 async function runCase(c: Case): Promise<CaseResult> {
   const started = Date.now();
   try {
-    const { workflow, validation } = await generateWorkflow({
+    // Plans and generates without the review step, like "generate directly"
+    const { workflows } = await generateDirect({
       provider,
       apiKey,
       model,
@@ -57,19 +59,21 @@ async function runCase(c: Case): Promise<CaseResult> {
       lang: c.lang,
     });
     const types = new Set(
-      (workflow.nodes as { type: string }[]).map((n) => n.type.replace(BASE_PREFIX, ""))
+      workflows.flatMap((w) => (w.workflow.nodes as { type: string }[]).map((n) => n.type.replace(BASE_PREFIX, "")))
     );
     const missingExpected = c.expect.filter((e) => !types.has(e));
+    const errors = workflows.flatMap((w) => w.validation.errors.map((e) => `${w.name} / ${e.node ?? ""}: ${e.message}`));
     return {
       id: c.id,
-      ok: validation.errors.length === 0 && missingExpected.length === 0,
-      errors: validation.errors.length,
-      warnings: validation.warnings.length,
-      repairRounds: validation.repairRounds,
+      ok: errors.length === 0 && missingExpected.length === 0,
+      errors: errors.length,
+      warnings: workflows.reduce((n, w) => n + w.validation.warnings.length, 0),
+      repairRounds: workflows.reduce((n, w) => n + w.validation.repairRounds, 0),
       nodes: types.size,
+      workflows: workflows.length,
       missingExpected,
       seconds: (Date.now() - started) / 1000,
-      errorDetails: validation.errors.map((e) => `${e.node ?? ""}: ${e.message}`),
+      errorDetails: errors,
     };
   } catch (err) {
     return {
@@ -96,7 +100,7 @@ async function main() {
     const status = r.ok ? "PASS" : r.failure ? "FAIL (call)" : "FAIL";
     const detail = r.failure
       ? r.failure.slice(0, 120)
-      : `errors ${r.errors}, repairs ${r.repairRounds}, nodes ${r.nodes}${r.missingExpected.length ? `, missing ${r.missingExpected.join("/")}` : ""}`;
+      : `workflows ${r.workflows}, errors ${r.errors}, repairs ${r.repairRounds}, node types ${r.nodes}${r.missingExpected.length ? `, missing ${r.missingExpected.join("/")}` : ""}`;
     console.log(`${status.padEnd(12)} ${c.id.padEnd(24)} ${r.seconds.toFixed(0).padStart(4)}s  ${detail}`);
   }
 
