@@ -31,7 +31,8 @@ export default function Home() {
         body: JSON.stringify({ prompt: prompt.trim() }),
       });
 
-      const data = await res.json();
+      // Non-JSON responses (e.g. an HTML error page) would otherwise surface as a cryptic parse error
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
         throw new Error(data.error || `Server error: ${res.status}`);

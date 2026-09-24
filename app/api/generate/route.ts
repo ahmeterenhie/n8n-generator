@@ -2,9 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
 
 // ─── OpenAI client ────────────────────────────────────────────────────────────
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Created lazily so a missing key yields a clear JSON error instead of a crash.
+let openai: OpenAI | null = null;
+
+function getOpenAI(): OpenAI | null {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) return null;
+  openai ??= new OpenAI({ apiKey });
+  return openai;
+}
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 const N8N_SYSTEM_PROMPT = `You are an expert n8n workflow architect. Your sole job is to convert a natural language description into a valid, importable n8n workflow JSON object.
@@ -299,9 +305,20 @@ export async function POST(req: NextRequest) {
   }
 
   // 2. Call OpenAI
+  const client = getOpenAI();
+  if (!client) {
+    return NextResponse.json(
+      {
+        error:
+          "OPENAI_API_KEY is not configured on the server. Add it to .env.local and restart the server.",
+      },
+      { status: 500 }
+    );
+  }
+
   let rawContent: string;
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await client.chat.completions.create({
       model: "gpt-4o",
       response_format: { type: "json_object" },
       temperature: 0.2, // Low temperature = more deterministic, schema-faithful output
