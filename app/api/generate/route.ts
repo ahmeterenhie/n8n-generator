@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { demoWorkflow } from "@/lib/demoWorkflows";
 import { errorResponse, generateText, resolveProvider } from "@/lib/llm";
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
@@ -304,14 +305,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 2. Call the selected provider (OpenAI or Anthropic)
+  const provider = resolveProvider(body.provider);
+  const lang = body.lang === "en" ? "en" : "tr";
+
+  // Demo mode: no AI call, return a matching sample workflow
+  if (provider === "demo") {
+    await new Promise((r) => setTimeout(r, 900)); // let the loading steps show briefly
+    return NextResponse.json({ workflow: demoWorkflow(userPrompt, lang), demo: true }, { status: 200 });
+  }
+
+  // 2. Call the selected provider
   // Node names follow the UI language so the diagram reads naturally
-  const nameLanguage = body.lang === "tr" ? "Turkish" : "English";
+  const nameLanguage = lang === "tr" ? "Turkish" : "English";
 
   let rawContent: string;
   try {
     rawContent = await generateText({
-      provider: resolveProvider(body.provider),
+      provider,
       apiKey: body.apiKey,
       model: body.model,
       system: N8N_SYSTEM_PROMPT,

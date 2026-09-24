@@ -1,14 +1,24 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { ApiError as GeminiApiError, FinishReason, GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
-import { DEFAULT_MODELS, type Provider } from "@/lib/apiConfig";
+import { DEFAULT_MODELS, PROVIDERS, type Provider } from "@/lib/apiConfig";
 
-// Server-side access to the two supported providers. Keys come from the
-// user's browser per request; env vars are only a fallback.
+// Server-side access to the AI providers. Keys come from the user's browser
+// per request; env vars are only a fallback. Demo mode never reaches here.
+
+type ModelProvider = Exclude<Provider, "demo">;
 
 export class LlmError extends Error {
   constructor(
-    public code: "MISSING_KEY" | "INVALID_KEY" | "MODEL_NOT_FOUND" | "UPSTREAM" | "REFUSAL" | "TRUNCATED",
+    public code:
+      | "MISSING_KEY"
+      | "INVALID_KEY"
+      | "MODEL_NOT_FOUND"
+      | "RATE_LIMIT"
+      | "UPSTREAM"
+      | "REFUSAL"
+      | "TRUNCATED",
     message: string,
     public status: number
   ) {
@@ -20,34 +30,51 @@ export class LlmError extends Error {
 // fallbacks re-run a declined request on Anthropic's recommended model.
 const FALLBACK_MODELS = new Set(["claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"]);
 
+const ENV: Record<ModelProvider, { key?: string; model?: string }> = {
+  anthropic: { key: process.env.ANTHROPIC_API_KEY, model: process.env.ANTHROPIC_MODEL },
+  openai: { key: process.env.OPENAI_API_KEY, model: process.env.OPENAI_MODEL },
+  gemini: { key: process.env.GEMINI_API_KEY, model: process.env.GEMINI_MODEL },
+};
+
 export function resolveProvider(value: unknown): Provider {
-  return value === "anthropic" ? "anthropic" : "openai";
+  return typeof value === "string" && (PROVIDERS as string[]).includes(value) ? (value as Provider) : "openai";
 }
 
-function resolveKey(provider: Provider, requestKey: unknown): string {
+function resolveKey(provider: ModelProvider, requestKey: unknown): string {
   const fromRequest = typeof requestKey === "string" ? requestKey.trim() : "";
-  const fromEnv = provider === "anthropic" ? process.env.ANTHROPIC_API_KEY : process.env.OPENAI_API_KEY;
-  const key = fromRequest || fromEnv?.trim() || "";
+  const key = fromRequest || ENV[provider].key?.trim() || "";
   if (!key) throw new LlmError("MISSING_KEY", `No ${provider} API key provided.`, 400);
   return key;
 }
 
-function resolveModel(provider: Provider, requestModel: unknown): string {
+function resolveModel(provider: ModelProvider, requestModel: unknown): string {
   const fromRequest = typeof requestModel === "string" ? requestModel.trim() : "";
-  const fromEnv = provider === "anthropic" ? process.env.ANTHROPIC_MODEL : process.env.OPENAI_MODEL;
-  return fromRequest || fromEnv || DEFAULT_MODELS[provider];
+  return fromRequest || ENV[provider].model || DEFAULT_MODELS[provider];
 }
 
 function mapError(err: unknown): LlmError {
   if (err instanceof LlmError) return err;
   console.error("[LLM Error]", err);
+  const message = err instanceof Error ? err.message : "Request to the AI provider failed.";
+
   if (err instanceof Anthropic.AuthenticationError || (err instanceof OpenAI.APIError && err.status === 401)) {
-    return new LlmError("INVALID_KEY", (err as Error).message, 401);
+    return new LlmError("INVALID_KEY", message, 401);
   }
   if (err instanceof Anthropic.NotFoundError || (err instanceof OpenAI.APIError && err.status === 404)) {
-    return new LlmError("MODEL_NOT_FOUND", (err as Error).message, 404);
+    return new LlmError("MODEL_NOT_FOUND", message, 404);
   }
-  return new LlmError("UPSTREAM", err instanceof Error ? err.message : "Request to the AI provider failed.", 502);
+  if (err instanceof Anthropic.RateLimitError || (err instanceof OpenAI.APIError && err.status === 429)) {
+    return new LlmError("RATE_LIMIT", message, 429);
+  }
+  if (err instanceof GeminiApiError) {
+    // Gemini reports a bad key as 400 INVALID_ARGUMENT ("API key not valid")
+    if (err.status === 401 || err.status === 403 || (err.status === 400 && /api key/i.test(message))) {
+      return new LlmError("INVALID_KEY", message, 401);
+    }
+    if (err.status === 404) return new LlmError("MODEL_NOT_FOUND", message, 404);
+    if (err.status === 429) return new LlmError("RATE_LIMIT", message, 429);
+  }
+  return new LlmError("UPSTREAM", message, 502);
 }
 
 export function errorResponse(err: unknown) {
@@ -57,7 +84,7 @@ export function errorResponse(err: unknown) {
 
 /** Sends one system + user prompt and returns the model's text output. */
 export async function generateText(opts: {
-  provider: Provider;
+  provider: ModelProvider;
   apiKey: unknown;
   model: unknown;
   system: string;
@@ -92,6 +119,29 @@ export async function generateText(opts: {
       return message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
     }
 
+    if (opts.provider === "gemini") {
+      const client = new GoogleGenAI({ apiKey });
+      const response = await client.models.generateContent({
+        model,
+        contents: opts.input,
+        config: {
+          systemInstruction: opts.system,
+          responseMimeType: "application/json",
+          // Thinking tokens count toward this limit on 2.5 models
+          maxOutputTokens: 32000,
+        },
+      });
+
+      const finish = response.candidates?.[0]?.finishReason;
+      if (response.promptFeedback?.blockReason || finish === FinishReason.SAFETY || finish === FinishReason.PROHIBITED_CONTENT) {
+        throw new LlmError("REFUSAL", "The model declined this request.", 422);
+      }
+      if (finish === FinishReason.MAX_TOKENS) {
+        throw new LlmError("TRUNCATED", "The response hit the output limit before finishing.", 422);
+      }
+      return response.text ?? "";
+    }
+
     // OpenAI Responses API: serves Codex models as well as GPT models
     const client = new OpenAI({ apiKey });
     const response = await client.responses.create({
@@ -108,16 +158,22 @@ export async function generateText(opts: {
 }
 
 /** Checks the key and model access with a cheap metadata call (no tokens spent). */
-export async function testConnection(opts: { provider: Provider; apiKey: unknown; model: unknown }): Promise<string> {
+export async function testConnection(opts: {
+  provider: ModelProvider;
+  apiKey: unknown;
+  model: unknown;
+}): Promise<string> {
   const apiKey = resolveKey(opts.provider, opts.apiKey);
   const model = resolveModel(opts.provider, opts.model);
   try {
     if (opts.provider === "anthropic") {
-      const info = await new Anthropic({ apiKey }).models.retrieve(model);
-      return info.id;
+      return (await new Anthropic({ apiKey }).models.retrieve(model)).id;
     }
-    const info = await new OpenAI({ apiKey }).models.retrieve(model);
-    return info.id;
+    if (opts.provider === "gemini") {
+      const info = await new GoogleGenAI({ apiKey }).models.get({ model });
+      return info.name?.replace(/^models\//, "") ?? model;
+    }
+    return (await new OpenAI({ apiKey }).models.retrieve(model)).id;
   } catch (err) {
     throw mapError(err);
   }

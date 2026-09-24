@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Shell } from "@/components/Shell";
 import { WorkflowDiagram } from "@/components/WorkflowDiagram";
-import { activeConnection, loadApiConfig, type Connection, type Provider } from "@/lib/apiConfig";
+import { activeConnection, loadApiConfig, needsKey, type Connection, type Provider } from "@/lib/apiConfig";
 import { translateError, useI18n } from "@/lib/i18n";
 
 export default function Generator() {
@@ -12,6 +12,7 @@ export default function Generator() {
   const g = t.generator;
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState<string | null>(null);
+  const [isDemo, setIsDemo] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -51,6 +52,7 @@ export default function Generator() {
       }
 
       setResult(JSON.stringify(data.workflow, null, 2));
+      setIsDemo(data.demo === true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t.errors.SERVER);
     } finally {
@@ -113,11 +115,11 @@ export default function Generator() {
         </header>
 
         {/* API connection status */}
-        {conn && !conn.apiKey && (
+        {conn && (!needsKey(conn.provider) || !conn.apiKey) && (
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2 border border-[#febc2e]/30 bg-[#febc2e]/5 rounded-sm px-4 py-3">
-            <span className="text-[#febc2e] text-xs">{g.noKeyBanner}</span>
+            <span className="text-[#febc2e] text-xs">{needsKey(conn.provider) ? g.noKeyBanner : g.demoBanner}</span>
             <Link href="/settings" className="text-xs font-bold text-[#ff6b35] hover:text-[#ff8555]">
-              {g.noKeyLink}
+              {needsKey(conn.provider) ? g.noKeyLink : g.demoLink}
             </Link>
           </div>
         )}
@@ -129,12 +131,18 @@ export default function Generator() {
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
               <span className="text-[#4a4a5a] text-xs tracking-widest">{g.fileLabel}</span>
               <div className="flex items-center gap-3">
-                {conn?.apiKey && (
+                {conn && (!needsKey(conn.provider) || conn.apiKey) && (
                   <Link
                     href="/settings"
                     className="text-[11px] text-[#6b6b7b] hover:text-[#ff6b35] border border-[#1e1e2e] rounded-sm px-2 py-0.5"
                   >
-                    {t.settings.providers[conn.provider].label}: <span className="text-[#28c840]">{conn.model}</span>
+                    {needsKey(conn.provider) ? (
+                      <>
+                        {t.settings.providers[conn.provider].label}: <span className="text-[#28c840]">{conn.model}</span>
+                      </>
+                    ) : (
+                      <span className="text-[#febc2e]">{t.settings.providers.demo.label}</span>
+                    )}
                   </Link>
                 )}
                 <span className={`text-xs tabular-nums ${prompt.length > 800 ? "text-[#ff5f57]" : "text-[#4a4a5a]"}`}>
@@ -264,6 +272,12 @@ export default function Generator() {
                   </button>
                 </div>
               </div>
+
+              {isDemo && (
+                <p className="px-4 py-2 border-b border-[#1e1e2e] text-[11px] text-[#febc2e] bg-[#febc2e]/5">
+                  {g.demoNotice}
+                </p>
+              )}
 
               {view === "diagram" ? (
                 <WorkflowDiagram workflow={workflow} />
