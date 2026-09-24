@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { JetBrains_Mono } from "next/font/google";
-import { I18nProvider, LANG_COOKIE, type Lang } from "@/lib/i18n";
+import { DEFAULT_LANG, LANG_COOKIE, dictionaries, type Lang } from "@/lib/dictionaries";
+import { I18nProvider } from "@/lib/i18n";
 import "./globals.css";
 
 const jetbrainsMono = JetBrains_Mono({
@@ -10,23 +11,20 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: "n8n Forge — Prompt-to-Workflow Generator",
-  description:
-    "Describe your automation in plain language. Get a production-ready n8n workflow JSON instantly.",
-  keywords: ["n8n", "workflow", "automation", "AI", "OpenAI", "Codex", "no-code"],
-  openGraph: {
-    title: "n8n Forge",
-    description: "AI-powered n8n workflow generator",
-    type: "website",
-  },
-};
+export function generateMetadata(): Metadata {
+  const { meta } = dictionaries[detectLang()];
+  return {
+    title: meta.title,
+    description: meta.description,
+    keywords: ["n8n", "workflow", "automation", "AI", "Claude", "OpenAI", "Codex", "no-code"],
+    openGraph: { title: "n8n Forge", description: meta.description, type: "website" },
+  };
+}
 
-// Saved choice first, then the browser's language
+// Turkish unless the visitor picked English with the language switch
 function detectLang(): Lang {
   const saved = cookies().get(LANG_COOKIE)?.value;
-  if (saved === "tr" || saved === "en") return saved;
-  return headers().get("accept-language")?.toLowerCase().startsWith("tr") ? "tr" : "en";
+  return saved === "tr" || saved === "en" ? saved : DEFAULT_LANG;
 }
 
 export default function RootLayout({

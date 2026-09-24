@@ -44,7 +44,7 @@ export function LoginForm({ next, showDefaultsHint }: { next: string; showDefaul
           className="w-full max-w-sm border border-[#1e1e2e] bg-[#0d0d17] rounded-sm overflow-hidden"
         >
           <div className="px-5 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
-            <span className="text-[#4a4a5a] text-xs tracking-widest">LOGIN.sh</span>
+            <span className="text-[#4a4a5a] text-xs tracking-widest">{t.login.fileLabel}</span>
           </div>
 
           <div className="px-5 py-6 space-y-5">

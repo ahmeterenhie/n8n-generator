@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, missingKeyResponse, openAIErrorResponse, resolveModel } from "@/lib/openaiServer";
+import { errorResponse, generateText, resolveProvider } from "@/lib/llm";
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 const N8N_SYSTEM_PROMPT = `You are an expert n8n workflow architect. Your sole job is to convert a natural language description into a valid, importable n8n workflow JSON object.
@@ -304,27 +304,25 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 2. Call OpenAI (Responses API: supports Codex models as well as GPT models)
-  const client = createClient(body.apiKey);
-  if (!client) return missingKeyResponse();
+  // 2. Call the selected provider (OpenAI or Anthropic)
+  // Node names follow the UI language so the diagram reads naturally
+  const nameLanguage = body.lang === "tr" ? "Turkish" : "English";
 
   let rawContent: string;
   try {
-    const response = await client.responses.create({
-      model: resolveModel(body.model),
-      instructions: N8N_SYSTEM_PROMPT,
-      input: `Generate an n8n workflow for the following requirement:\n\n${userPrompt}`,
-      // Generous budget: reasoning models spend part of it before writing output
-      max_output_tokens: 16000,
+    rawContent = await generateText({
+      provider: resolveProvider(body.provider),
+      apiKey: body.apiKey,
+      model: body.model,
+      system: N8N_SYSTEM_PROMPT,
+      input: `Generate an n8n workflow for the following requirement. Write the workflow "name" and every node "name" in ${nameLanguage}.\n\n${userPrompt}`,
     });
 
-    rawContent = response.output_text ?? "";
-
     if (!rawContent) {
-      throw new Error("OpenAI returned an empty response.");
+      return NextResponse.json({ code: "UPSTREAM", error: "The model returned an empty response." }, { status: 502 });
     }
   } catch (err: unknown) {
-    return openAIErrorResponse(err);
+    return errorResponse(err);
   }
 
   // 3. Parse and validate the generated JSON

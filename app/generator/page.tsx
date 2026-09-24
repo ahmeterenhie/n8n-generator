@@ -4,23 +4,24 @@ import Link from "next/link";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { Shell } from "@/components/Shell";
 import { WorkflowDiagram } from "@/components/WorkflowDiagram";
-import { loadApiConfig, type ApiConfig } from "@/lib/apiConfig";
+import { activeConnection, loadApiConfig, type Connection, type Provider } from "@/lib/apiConfig";
 import { translateError, useI18n } from "@/lib/i18n";
 
 export default function Generator() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const g = t.generator;
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [config, setConfig] = useState<ApiConfig | null>(null);
+  // Provider, key and model saved on the API page
+  const [conn, setConn] = useState<(Connection & { provider: Provider }) | null>(null);
   const [view, setView] = useState<"diagram" | "json">("diagram");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // localStorage is only available after mount
-  useEffect(() => setConfig(loadApiConfig()), []);
+  useEffect(() => setConn(activeConnection(loadApiConfig())), []);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim() || loading) return;
@@ -33,7 +34,13 @@ export default function Generator() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: prompt.trim(), apiKey: config?.apiKey, model: config?.model }),
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          provider: conn?.provider,
+          apiKey: conn?.apiKey,
+          model: conn?.model,
+          lang,
+        }),
       });
 
       // Non-JSON responses (e.g. an HTML error page) would otherwise surface as a cryptic parse error
@@ -49,7 +56,7 @@ export default function Generator() {
     } finally {
       setLoading(false);
     }
-  }, [prompt, loading, config, t]);
+  }, [prompt, loading, conn, lang, t]);
 
   const handleCopy = useCallback(async () => {
     if (!result) return;
@@ -106,7 +113,7 @@ export default function Generator() {
         </header>
 
         {/* API connection status */}
-        {config && !config.apiKey && (
+        {conn && !conn.apiKey && (
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2 border border-[#febc2e]/30 bg-[#febc2e]/5 rounded-sm px-4 py-3">
             <span className="text-[#febc2e] text-xs">{g.noKeyBanner}</span>
             <Link href="/settings" className="text-xs font-bold text-[#ff6b35] hover:text-[#ff8555]">
@@ -122,12 +129,12 @@ export default function Generator() {
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
               <span className="text-[#4a4a5a] text-xs tracking-widest">{g.fileLabel}</span>
               <div className="flex items-center gap-3">
-                {config?.apiKey && (
+                {conn?.apiKey && (
                   <Link
                     href="/settings"
                     className="text-[11px] text-[#6b6b7b] hover:text-[#ff6b35] border border-[#1e1e2e] rounded-sm px-2 py-0.5"
                   >
-                    {g.modelChip}: <span className="text-[#28c840]">{config.model}</span>
+                    {t.settings.providers[conn.provider].label}: <span className="text-[#28c840]">{conn.model}</span>
                   </Link>
                 )}
                 <span className={`text-xs tabular-nums ${prompt.length > 800 ? "text-[#ff5f57]" : "text-[#4a4a5a]"}`}>

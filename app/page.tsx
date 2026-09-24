@@ -4,20 +4,6 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { useI18n } from "@/lib/i18n";
 
-// Illustrative snippet shown in the hero
-const SAMPLE_JSON = `{
-  "name": "Daily orders → Slack",
-  "nodes": [
-    { "name": "Every day 09:00",
-      "type": "n8n-nodes-base.scheduleTrigger" },
-    { "name": "Fetch orders",
-      "type": "n8n-nodes-base.httpRequest" },
-    { "name": "Post summary",
-      "type": "n8n-nodes-base.slack" }
-  ],
-  "connections": { ... }
-}`;
-
 export default function Landing() {
   const { t } = useI18n();
   const l = t.landing;
@@ -56,10 +42,10 @@ export default function Landing() {
         <div className="border border-[#1e1e2e] bg-[#0d0d17] rounded-sm overflow-hidden shadow-[0_0_60px_-20px_rgba(255,107,53,0.35)]">
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#1e1e2e] bg-[#0a0a12]">
             <span className="w-2 h-2 rounded-full bg-[#28c840]" />
-            <span className="text-[#28c840] text-xs tracking-widest">workflow.json</span>
+            <span className="text-[#28c840] text-xs tracking-widest">{l.sampleFile}</span>
           </div>
           <pre className="px-5 py-4 text-xs text-[#a8a59e] leading-relaxed overflow-x-auto scrollbar-thin">
-            <code>{SAMPLE_JSON}</code>
+            <code>{l.sampleJson}</code>
           </pre>
         </div>
       </section>

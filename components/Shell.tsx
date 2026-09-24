@@ -110,10 +110,10 @@ function NavLink({ href, active, children }: { href: string; active: boolean; ch
 }
 
 export function LanguageToggle() {
-  const { lang, setLang } = useI18n();
+  const { lang, setLang, t } = useI18n();
   const options: Lang[] = ["tr", "en"];
   return (
-    <div className="flex items-center border border-[#1e1e2e] rounded-sm overflow-hidden" role="group" aria-label="Language">
+    <div className="flex items-center border border-[#1e1e2e] rounded-sm overflow-hidden" role="group" aria-label={t.nav.language}>
       {options.map((l) => (
         <button
           key={l}
